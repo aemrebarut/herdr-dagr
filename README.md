@@ -125,6 +125,11 @@ command = "herdr-dagr.open-dagr"
 description = "open dagr run DAG in split"
 ```
 
+Then one arrow key places the pane (left/below/above/right of your
+work) and hands focus back. Prefer a fixed spot? Bind
+`open-dagr-down`, `open-dagr-up`, `open-dagr-left`, or
+`open-dagr-right` instead.
+
 Or standalone, without herdr:
 
 ```sh

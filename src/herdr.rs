@@ -518,7 +518,15 @@ pub fn place_self(split: &str, swap: Option<&str>) -> Result<(), String> {
     if let Some(d) = swap {
         socket_request("pane.swap", serde_json::json!({"pane_id": pane, "direction": d}))?;
     }
-    socket_request("pane.focus", serde_json::json!({"pane_id": pane}))
+    // placement is FINAL: hand focus back to the work pane, so the
+    // prefix+d → arrow chord ends with the user where they started
+    // (and further arrows type into their own pane, not this one)
+    let back = dest
+        .get("target_pane_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .unwrap_or(pane);
+    socket_request("pane.focus", serde_json::json!({"pane_id": back}))
 }
 
 // ── tests: envelope fixtures from a live protocol-19 daemon ─────────

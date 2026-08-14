@@ -40,8 +40,10 @@ command = ["/bin/sh", "-c", "exec \"${HERDR_PLUGIN_ROOT:?not launched by herdr}/
 
 # Summon the pane (bind to a key in ~/.config/herdr/config.toml, or run
 # `herdr plugin action invoke open-dagr --plugin herdr-dagr`). The
-# launcher takes the split direction as its argument; herdr supports
-# right and down.
+# launcher takes the placement as its argument: right | down | up |
+# left (up/left compose split + swap, since herdr splits only go
+# right/down). One action per placement so each can carry a keybinding;
+# arrows inside the pane re-place it afterwards either way.
 [[actions]]
 id = "open-dagr"
 platforms = ["linux", "macos"]
@@ -57,3 +59,27 @@ title = "Open dagr (below)"
 description = "Open the live run DAG in a split pane below the current work."
 contexts = ["workspace"]
 command = ["bash", "scripts/open-dagr.sh", "down"]
+
+[[actions]]
+id = "open-dagr-up"
+platforms = ["linux", "macos"]
+title = "Open dagr (above)"
+description = "Open the live run DAG in a split pane above the current work."
+contexts = ["workspace"]
+command = ["bash", "scripts/open-dagr.sh", "up"]
+
+[[actions]]
+id = "open-dagr-left"
+platforms = ["linux", "macos"]
+title = "Open dagr (left)"
+description = "Open the live run DAG in a split pane left of the current work."
+contexts = ["workspace"]
+command = ["bash", "scripts/open-dagr.sh", "left"]
+
+[[actions]]
+id = "open-dagr-right"
+platforms = ["linux", "macos"]
+title = "Open dagr (right)"
+description = "Open the live run DAG in a split pane right of the current work."
+contexts = ["workspace"]
+command = ["bash", "scripts/open-dagr.sh", "right"]

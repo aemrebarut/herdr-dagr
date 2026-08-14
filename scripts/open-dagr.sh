@@ -14,9 +14,17 @@ set -uo pipefail
 herdr_bin="${HERDR_BIN_PATH:-herdr}"
 plugin_id="${HERDR_PLUGIN_ID:-herdr-dagr}"
 
-# Split direction, from the action's argv. herdr accepts right | down.
-direction="${1:-right}"
-case "$direction" in right|down) ;; *) direction="right" ;; esac
+# Placement, from the action's argv. herdr splits only know right and
+# down, so left/up open as right/down and then swap across (the same
+# trick the viewer's arrow keys use).
+place="${1:-right}"
+case "$place" in
+  right) direction="right"; swap="" ;;
+  down)  direction="down";  swap="" ;;
+  left)  direction="right"; swap="left" ;;
+  up)    direction="down";  swap="up" ;;
+  *)     direction="right"; swap="" ;;
+esac
 
 # Context parsing lives in the dagr binary itself (`dagr pane-cwd`) so the
 # launcher needs no interpreter. The binary is built by scripts/build.sh at
@@ -44,4 +52,14 @@ if [ -n "$anchor" ]; then
   args+=(--env "DAGR_ANCHOR_PANE=$anchor")
 fi
 
-exec "$herdr_bin" "${args[@]}"
+if [ -z "$swap" ]; then
+  exec "$herdr_bin" "${args[@]}"
+fi
+
+# left/up: capture the opened pane's id from the JSON reply, then swap
+# it across the anchor. No jq on purpose — first "pane_id" wins.
+out=$("$herdr_bin" "${args[@]}") || exit 1
+pane_id=$(printf '%s' "$out" | sed -nE 's/.*"pane_id":"([^"]+)".*/\1/p' | head -1)
+if [ -n "$pane_id" ]; then
+  "$herdr_bin" pane swap --pane "$pane_id" --direction "$swap" >/dev/null
+fi

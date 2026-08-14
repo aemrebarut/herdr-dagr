@@ -610,14 +610,24 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                             }
                         }
                         // arrows place the PANE; the cursor is j/k (vim
-                        // grammar, like every other key here)
-                        Left | Right | Up | Down => app.place_pane(match k.code {
-                            Left => 'H',
-                            Down => 'J',
-                            Up => 'K',
-                            _ => 'L',
-                        }),
-                        Char(c @ ('H' | 'J' | 'K' | 'L')) => app.place_pane(c),
+                        // grammar, like every other key here). Press only,
+                        // never key-repeat: one keystroke, one final
+                        // placement — focus lands back on the work pane.
+                        Left | Right | Up | Down
+                            if k.kind == event::KeyEventKind::Press =>
+                        {
+                            app.place_pane(match k.code {
+                                Left => 'H',
+                                Down => 'J',
+                                Up => 'K',
+                                _ => 'L',
+                            });
+                        }
+                        Char(c @ ('H' | 'J' | 'K' | 'L'))
+                            if k.kind == event::KeyEventKind::Press =>
+                        {
+                            app.place_pane(c);
+                        }
                         Char('j') => app.move_sel(1),
                         Char('k') => app.move_sel(-1),
                         Tab => app.cycle_queue(),
