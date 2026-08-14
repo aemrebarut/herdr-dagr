@@ -484,6 +484,27 @@ pub struct FrameInput<'a> {
     pub herdr: Option<&'a crate::herdr::Hints>,
     /// Modal action prompt (M4): the text-input / confirm-gate line.
     pub prompt: Option<String>,
+    /// First-open placement hint: drawn until the first interaction, and
+    /// only inside herdr (placement needs the socket).
+    pub place_hint: bool,
+}
+
+/// What a left-click on a frame region means. The renderer owns the
+/// layout, so it is the only thing that can say which screen cells
+/// belong to which row — the view just replays these against (x, y).
+#[derive(Clone)]
+pub enum HitTarget {
+    /// select this trace row (row key)
+    Row(String),
+    /// jump to this task's latest attempt (attention-queue item)
+    Task(String),
+}
+
+pub struct Hit {
+    pub line: usize,
+    pub x0: usize,
+    pub x1: usize,
+    pub target: HitTarget,
 }
 
 /// A composed frame plus the output line carrying the selection, so the
@@ -495,6 +516,8 @@ pub struct Frame {
     /// confirm gate only counts as shown if these lines were actually
     /// inside the viewport on the last draw.
     pub prompt_line: Option<usize>,
+    /// Clickable regions of this frame (mouse support).
+    pub hits: Vec<Hit>,
 }
 
 pub fn compose(input: &FrameInput, w: usize) -> Frame {
@@ -527,9 +550,19 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         l.put(1, &format!("⚠ {b}"), Style::bold(style::BLOCKED));
         out.push(l.render(None, false));
     }
+    if input.place_hint {
+        let mut l = Line::new(w);
+        l.put(
+            1,
+            "▸ press an arrow or H/J/K/L to place this pane · ← left ↓ below ↑ above → right",
+            Style::bold(style::ACCENT),
+        );
+        out.push(l.render(None, false));
+    }
     out.push(String::new()); // spacer
 
     let sel = input.selected;
+    let mut hits: Vec<Hit> = Vec::new();
     if w >= FOLD_WIDTH {
         // sidecar: trace left · queue + card right
         let right_w = CARD_W;
@@ -555,6 +588,20 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         if let Some(i) = sel_row {
             sel_line = Some(base + i);
         }
+        for (i, r) in scene.rows.iter().enumerate() {
+            if r.selectable {
+                hits.push(Hit { line: base + i, x0: 0, x1: left_w, target: HitTarget::Row(r.key.clone()) });
+            }
+        }
+        // queue_panel: one header line, then one line per item
+        for (i, item) in scene.queue.iter().enumerate() {
+            hits.push(Hit {
+                line: base + 1 + i,
+                x0: left_w + 2,
+                x1: w,
+                target: HitTarget::Task(item.task_id.clone()),
+            });
+        }
         for i in 0..rows_n {
             let l = left.get(i).cloned().unwrap_or_else(|| {
                 Line::new(left_w).render(None, true)
@@ -569,7 +616,10 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         if let Some(i) = sel_row {
             sel_line = Some(base + i);
         }
-        for r in &scene.rows {
+        for (i, r) in scene.rows.iter().enumerate() {
+            if r.selectable {
+                hits.push(Hit { line: base + i, x0: 0, x1: w, target: HitTarget::Row(r.key.clone()) });
+            }
             let line = if w >= 96 {
                 full_row(r, w, sel == Some(r.key.as_str()))
             } else {
@@ -650,7 +700,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
         out.push(l.render(None, false));
     }
-    Frame { lines: out, sel_line, prompt_line }
+    Frame { lines: out, sel_line, prompt_line, hits }
 }
 
 pub fn help_lines() -> Vec<String> {
@@ -661,6 +711,7 @@ pub fn help_lines() -> Vec<String> {
         ("u / a / o / x", "unblock · answer · accept · reject — producer-declared, confirm-gated"),
         ("r", "reload the run file now"),
         ("arrows, H/J/K/L", "move this pane left · below · above · right of the work"),
+        ("mouse", "click selects a row or queue item · wheel moves the cursor"),
         ("?", "toggle this help"),
         ("q / esc", "quit (esc closes help first)"),
     ];
@@ -678,4 +729,84 @@ pub fn help_lines() -> Vec<String> {
         Style::dim(style::MUTED),
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model;
+
+    fn sample() -> Doc {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/samples/run.json"
+        ))
+        .expect("sample run file");
+        serde_json::from_str(&raw).expect("sample parses")
+    }
+
+    fn frame(doc: &Doc, w: usize, place_hint: bool) -> (Frame, model::Scene) {
+        let scene = model::build(doc, None, None, None);
+        let f = compose(
+            &FrameInput {
+                doc,
+                scene: &scene,
+                selected: None,
+                banner: None,
+                flash: None,
+                stale_min: None,
+                watching: false,
+                herdr: None,
+                prompt: None,
+                place_hint,
+            },
+            w,
+        );
+        let scene = model::build(doc, None, None, None);
+        (f, scene)
+    }
+
+    #[test]
+    fn place_hint_is_drawn_only_when_asked() {
+        let doc = sample();
+        let (with, _) = frame(&doc, 120, true);
+        assert!(
+            with.lines.iter().any(|l| l.contains("place this pane")),
+            "hint line missing"
+        );
+        let (without, _) = frame(&doc, 120, false);
+        assert!(
+            !without.lines.iter().any(|l| l.contains("place this pane")),
+            "hint must be opt-in (snapshots stay clean)"
+        );
+    }
+
+    #[test]
+    fn hits_cover_rows_and_queue_in_both_layouts() {
+        let doc = sample();
+        for w in [150usize, 72] {
+            let (f, scene) = frame(&doc, w, false);
+            let rows = f
+                .hits
+                .iter()
+                .filter(|h| matches!(h.target, HitTarget::Row(_)))
+                .count();
+            assert_eq!(
+                rows,
+                scene.rows.iter().filter(|r| r.selectable).count(),
+                "w={w}: one hit per selectable row"
+            );
+            let queue = f
+                .hits
+                .iter()
+                .filter(|h| matches!(h.target, HitTarget::Task(_)))
+                .count();
+            let expect_queue = if w >= FOLD_WIDTH { scene.queue.len() } else { 0 };
+            assert_eq!(queue, expect_queue, "w={w}: queue hits only in the sidecar");
+            for h in &f.hits {
+                assert!(h.line < f.lines.len(), "w={w}: hit line in frame");
+                assert!(h.x0 < h.x1 && h.x1 <= w, "w={w}: hit span sane");
+            }
+        }
+    }
 }

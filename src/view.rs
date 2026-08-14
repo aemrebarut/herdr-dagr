@@ -112,6 +112,7 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
             watching: false,
             herdr: None, // hints are a live concern too
             prompt: None,
+            place_hint: false, // placement is a live-in-herdr concern
         },
         w,
     );
@@ -230,6 +231,14 @@ struct App {
     /// In-flight focus result (focus runs off-thread; even a bounded CLI
     /// wait has no business freezing the render loop).
     bg_rx: Option<std::sync::mpsc::Receiver<String>>,
+    /// First-open placement hint: shown until the first interaction.
+    place_hint: bool,
+    /// Clickable regions of the last drawn frame, plus the viewport the
+    /// frame was drawn through — a click is (column, terminal row) and
+    /// only means something relative to that exact draw.
+    hits: Vec<render::Hit>,
+    view_start: usize,
+    view_rows: usize,
 }
 
 impl App {
@@ -326,6 +335,38 @@ impl App {
             .unwrap_or_else(|| item.task_id.clone());
         self.selected = Some(key);
         self.queue_pos += 1;
+    }
+
+    /// Left-click: replay (column, terminal row) against the hit regions
+    /// of the frame that is actually on screen. Anything that isn't a
+    /// recorded hit is dead space — a click never invents an action.
+    fn click(&mut self, col: usize, row: usize) {
+        if row >= self.view_rows {
+            return;
+        }
+        let line = self.view_start + row;
+        let target = self
+            .hits
+            .iter()
+            .find(|h| h.line == line && col >= h.x0 && col < h.x1)
+            .map(|h| h.target.clone());
+        match target {
+            Some(render::HitTarget::Row(key)) => self.selected = Some(key),
+            Some(render::HitTarget::Task(tid)) => {
+                // same move as tab: the queue thinks in tasks, the cursor
+                // in rows — land on the task's latest real row
+                let key = self
+                    .scene()
+                    .rows
+                    .iter()
+                    .rev()
+                    .find(|r| r.task_id == tid && !r.dotted)
+                    .map(|r| r.key.clone())
+                    .unwrap_or(tid);
+                self.selected = Some(key);
+            }
+            None => {}
+        }
     }
 
     fn focus(&mut self) {
@@ -529,7 +570,14 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         mode: Mode::Normal,
         gate_seen: false,
         bg_rx: None,
+        place_hint: false,
+        hits: Vec::new(),
+        view_start: 0,
+        view_rows: 0,
     };
+    // the placement hint only makes sense where placement works: inside
+    // herdr, on a fresh pane, before the user has touched anything
+    app.place_hint = app.herdr.is_some();
     app.update_watch();
     if app.selected.is_none() {
         // start on the most urgent thing, like a human would
@@ -558,11 +606,18 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         stdout,
         terminal::EnterAlternateScreen,
         cursor::Hide,
-        event::EnableBracketedPaste
+        event::EnableBracketedPaste,
+        event::EnableMouseCapture
     )
     .map_err(|e| e.to_string())?;
     let result = event_loop(&mut app, &mut stdout);
-    let _ = execute!(stdout, event::DisableBracketedPaste, cursor::Show, terminal::LeaveAlternateScreen);
+    let _ = execute!(
+        stdout,
+        event::DisableMouseCapture,
+        event::DisableBracketedPaste,
+        cursor::Show,
+        terminal::LeaveAlternateScreen
+    );
     let _ = terminal::disable_raw_mode();
     result
 }
@@ -578,6 +633,8 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
             match event::read().map_err(|e| e.to_string())? {
                 event::Event::Key(k) if k.kind != event::KeyEventKind::Release => {
                     use event::KeyCode::*;
+                    // any keypress proves the hint was read
+                    app.place_hint = false;
                     // modal keys first: while typing, 'q' is a letter
                     match std::mem::replace(&mut app.mode, Mode::Normal) {
                         m @ (Mode::Input { .. } | Mode::Confirm { .. }) => {
@@ -655,6 +712,27 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         );
                     }
                 }
+                event::Event::Mouse(m) => {
+                    use event::{MouseButton, MouseEventKind};
+                    app.place_hint = false;
+                    // mouse never answers a modal: gates and prompts are
+                    // keyboard-only on purpose (a stray click must not
+                    // confirm anything)
+                    if matches!(app.mode, Mode::Normal) {
+                        match m.kind {
+                            MouseEventKind::ScrollDown if !app.help => app.move_sel(1),
+                            MouseEventKind::ScrollUp if !app.help => app.move_sel(-1),
+                            MouseEventKind::Down(MouseButton::Left) => {
+                                if app.help {
+                                    app.help = false;
+                                } else {
+                                    app.click(m.column as usize, m.row as usize);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 event::Event::Resize(_, _) => {}
                 _ => {}
             }
@@ -707,6 +785,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     let (w, h) = (w as usize, h as usize);
     let modal = !matches!(app.mode, Mode::Normal);
     let (lines, sel_line, prompt_line) = if app.help {
+        app.hits = Vec::new();
         (render::help_lines(), None, None)
     } else {
         let hints = app.hints();
@@ -727,13 +806,17 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
                 watching: true,
                 herdr: hints.as_ref(),
                 prompt: app.prompt_line(),
+                place_hint: app.place_hint,
             },
             w,
         );
+        app.hits = frame.hits;
         (frame.lines, frame.sel_line, frame.prompt_line)
     };
     let visible = h.saturating_sub(1);
     let start = viewport_start(lines.len(), visible, sel_line, app.scroll, modal);
+    app.view_start = start;
+    app.view_rows = visible;
     if !modal {
         // the modal tail-pin is transient; the browsing scroll position
         // survives the modal and is restored on cancel
