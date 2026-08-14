@@ -1,0 +1,61 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: the four honest ways to settle", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T12:00:00Z",
+  "tasks": [
+    {
+      "id": "E1", "title": "settle with mechanical proof", "kind": "impl",
+      "owner": "dev-1", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "E1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "dev-1", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:05:00Z", "ended_at": "2026-03-01T09:45:00Z",
+        "outcome": {"result": "done", "evidence": "verified", "receipt": "cargo test 40/40 ✓ @ a1b2c3d"}
+      }]
+    },
+    {
+      "id": "E2", "title": "settle from a typed report", "kind": "impl",
+      "owner": "dev-2", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "E2·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "dev-2", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:10:00Z", "ended_at": "2026-03-01T10:30:00Z",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "result envelope: {files: 4, tests_added: 6, status: complete}"}
+      }]
+    },
+    {
+      "id": "E3", "title": "settle on a bare claim", "kind": "impl",
+      "owner": "dev-3", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "E3·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "dev-3", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:15:00Z", "ended_at": "2026-03-01T10:50:00Z",
+        "outcome": {"result": "done", "evidence": "asserted", "reason": "actor asserted completion in chat; no typed envelope to verify against"}
+      }]
+    },
+    {
+      "id": "E4", "title": "settlement claim with no envelope at all", "kind": "impl",
+      "owner": "dev-4", "state": "settled_unverified", "deps": [],
+      "attempts": [{
+        "id": "E4·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "dev-4", "model": "fable",
+        "state": "settled_unverified",
+        "started_at": "2026-03-01T09:20:00Z", "ended_at": "2026-03-01T11:10:00Z",
+        "outcome": {"result": "settled_unverified", "evidence": "heuristic", "reason": "no claim of completion from the actor; inferring from clean pane exit — work may or may not be complete"}
+      }]
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:05:00Z", "type": "attempt_started", "task": "E1", "attempt": "E1·a1", "actor": "dev-1"},
+    {"at": "2026-03-01T09:10:00Z", "type": "attempt_started", "task": "E2", "attempt": "E2·a1", "actor": "dev-2"},
+    {"at": "2026-03-01T09:15:00Z", "type": "attempt_started", "task": "E3", "attempt": "E3·a1", "actor": "dev-3"},
+    {"at": "2026-03-01T09:20:00Z", "type": "attempt_started", "task": "E4", "attempt": "E4·a1", "actor": "dev-4"},
+    {"at": "2026-03-01T09:45:00Z", "type": "attempt_settled", "task": "E1", "attempt": "E1·a1", "actor": "dev-1"},
+    {"at": "2026-03-01T10:30:00Z", "type": "attempt_settled", "task": "E2", "attempt": "E2·a1", "actor": "dev-2"},
+    {"at": "2026-03-01T10:50:00Z", "type": "attempt_settled", "task": "E3", "attempt": "E3·a1", "actor": "dev-3"},
+    {"at": "2026-03-01T11:10:00Z", "type": "attempt_settled", "task": "E4", "attempt": "E4·a1", "actor": "dev-4", "detail": "no envelope — settled unverified"}
+  ]
+}

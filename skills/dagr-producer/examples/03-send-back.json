@@ -1,0 +1,46 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: review send-back", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T10:20:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: core lane", "kind": "impl",
+      "owner": "l1-dev", "state": "working", "deps": [],
+      "attempts": [
+        {
+          "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l1-dev", "model": "fable",
+          "state": "rejected",
+          "started_at": "2026-03-01T09:05:00Z", "ended_at": "2026-03-01T09:50:00Z",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "error paths untested", "receipt": "review verdict R1·a1: changes-required, 3 findings"}
+        },
+        {
+          "id": "L1·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "rev-1", "ref": "R1·a1", "reason": "error paths untested"},
+          "actor": "l1-dev", "model": "fable",
+          "locator": {"pane": "wX:p3"},
+          "state": "working", "started_at": "2026-03-01T10:15:00Z",
+          "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-03-01T10:18:00Z", "queued_input": 2}
+        }
+      ]
+    },
+    {
+      "id": "R1", "title": "review: core lane", "kind": "review",
+      "owner": "rev-1", "state": "done", "deps": ["L1"],
+      "attempts": [{
+        "id": "R1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "rev-1", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:55:00Z", "ended_at": "2026-03-01T10:10:00Z",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 3 findings"}
+      }]
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:05:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"},
+    {"at": "2026-03-01T09:55:00Z", "type": "attempt_started", "task": "R1", "attempt": "R1·a1", "actor": "rev-1"},
+    {"at": "2026-03-01T10:10:00Z", "type": "attempt_settled", "task": "R1", "attempt": "R1·a1", "actor": "rev-1", "detail": "changes-required"},
+    {"at": "2026-03-01T10:12:00Z", "type": "attempt_settled", "task": "L1", "attempt": "L1·a1", "actor": "rev-1", "detail": "sent back: error paths untested"},
+    {"at": "2026-03-01T10:15:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a2", "actor": "l1-dev"}
+  ]
+}

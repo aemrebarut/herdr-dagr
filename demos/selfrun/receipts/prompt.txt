@@ -1,0 +1,153 @@
+Producer prompt, verbatim, as given to a fresh agent (claude subagent,
+model claude-fable-5, no prior context) on 2026-08-14 ~04:25 local
+(America/Los_Angeles). This file is the exact text; the receipts
+alongside it are that agent's own artifacts. This session regenerated
+the demo for public release: the prior regeneration's receipts carried
+development-environment context (absolute paths, the operator's name),
+so the run was re-modeled from a clean brief rather than hand-edited —
+receipts are either authentic or they are not receipts.
+(One post-hoc redaction, recorded here so the redaction is itself on
+the record: the ENVIRONMENT line originally named the operator's
+repository directory; it now states the invariant without the path.
+Nothing else was altered.)
+────────────────────────────────────────────────────────────────────────
+You are a producer agent being onboarded to maintain a dagr run file.
+
+ENVIRONMENT: work from the repository root; every path below is
+relative to it.
+
+METHOD — your ONLY methodology source is the skill:
+skills/dagr-producer/SKILL.md (relative to the repo root, which is your
+working directory). Read it first and follow it exactly. It will point
+you at CONTRACT.md's schema section and at its own examples/ directory;
+those two are allowed as the skill's references. Do NOT read the repo's
+src/, docs/, tests/, or the existing demos/ content — how you write the
+file must come from the skill alone.
+
+TASK: model the development history of this repository (facts below) as
+a run file at demos/selfrun/run.json — overwrite the existing file
+without reading it.
+
+RECEIPTS — write into demos/selfrun/receipts/:
+- 01-first-write.json: an exact copy of your FIRST complete candidate
+  document, saved before you run your first check on it; and
+  01-first-write.sha256: its shasum -a 256.
+- 02-check-log.txt: the raw output (stdout+stderr and exit code) of
+  EVERY validator invocation you run, each preceded by a line
+  "=== check N: <file> <flags> ===".
+- 03-corrections.md: one line per fix iteration (what finding, what you
+  changed). If your first check was already clean, write exactly that.
+
+VALIDATOR: follow the skill's preflight. (In this environment the repo
+build exists; export DAGR_BIN=target/release/dagr from the repo root is
+an acceptable resolution.)
+
+FACTS TO MODEL (authoritative; encode them per the skill — states,
+causes, evidence tiers, gates, policy, events are YOUR calls to get
+right). All clock times below are local America/Los_Angeles on
+2026-08-14; write timestamps as ISO-8601 with the -07:00 offset.
+
+The run: an autonomous overnight build of the herdr-dagr plugin,
+directed by the human operator (name them "operator") at 00:05 with a
+standing rule: run milestones M0-M5 autonomously; every milestone gets
+TWO independent reviews (an opus-5 reviewer agent and a gpt-5.6-sol
+reviewer agent); revise until findings are addressed; commit everything.
+That instruction is the run's one human directive. The run started at
+00:05 (the directive). Reviewer agents run in herdr panes: the opus
+reviewer in pane wF:pK, the gpt reviewer in pane wF:pM. The main
+autonomous session ("orchestrator-main") and the selfrun producer
+agents are NOT herdr panes — use agent-name locators for them, never
+pane locators.
+
+Evidence discipline for receipts: cite only artifacts a reader of THIS
+repository tree can check (test suites under tests/, strict-clean
+sample/demo documents, receipt files under demos/*/receipts/). Review
+verdicts are the reviewers' own documents and are not shipped in this
+tree — encode review outcomes as evidence "reported", receipt = the
+verdict summary, no file path.
+
+Work items and their real histories:
+- M0 contract freeze + validator: one attempt, done 00:26. Verified —
+  receipt: "samples/run.json + samples/states.json strict-clean under
+  dagr check (in-tree)".
+- M1 renderer: attempt 1 done 00:45 (verified: headless snapshot tests,
+  in-tree under tests/). Both M1 reviews found defects — attempt 1 was
+  sent back; attempt 2 (the revision pass, 01:06-01:29) done 01:29,
+  verified — receipt: "renderer/validator regression suite green
+  (tests/, in-tree); every review finding mapped in a revision ledger".
+- Review "M1 review (gpt)": one attempt, started ~01:05, done 01:13.
+  Reported, verdict changes-required, 20 findings.
+- Review "M1 review (opus)": one attempt, started ~01:05, done 01:15.
+  Reported, changes-required, 23 findings.
+- Gate "M1 dual review complete": fan-in over the two M1 reviews; both
+  landed by 01:15 — encode the promotion honestly as an event. The
+  merged-ledger work it gated is part of M1 attempt 2 above.
+- M2 herdr integration: attempt 1 done 01:01; sent back by the gpt M2
+  review → attempt 2 done 01:56 (verified: fake-daemon session tests +
+  live event-envelope verification; tests in-tree); the opus M2 review
+  then landed more findings → attempt 3 done 02:14 (verified: suite
+  green incl. live pane-focus round trip).
+- Review "M2 review (gpt)": started ~01:20, done 01:44. Reported,
+  changes-required, 11 findings.
+- Review "M2 review (opus)": started ~01:33, done 02:11. Reported,
+  changes-required, 16 findings. Ran in pane wF:pK.
+- M3 producer skill + selfrun demo: attempt 1 done 01:37; sent back by
+  the gpt M3 review → attempt 2 done 02:29 (skill revision + first
+  receipts-backed demo regeneration); sent back by the opus M3 review
+  (1 blocker, 3 major — the skill taught shapes without semantics) →
+  attempt 3 done 02:49 (verified: skill examples held strict-clean by
+  the test suite, in-tree).
+- Review "M3 review (gpt)": started ~01:58, done 02:05. Reported,
+  changes-required, 7 findings.
+- Review "M3 review (opus)": started ~02:20, done 02:44. Reported,
+  changes-required, 14 findings.
+- M4 confirm-gated actions + flow analytics: attempt 1 done 01:42; sent
+  back by the gpt M4 review → attempt 2 done 02:36 (producer trust
+  fixes); sent back by the opus M4 review (1 blocker: the confirm gate
+  could render off-screen while still armed) → attempt 3 done 04:21,
+  verified — receipt: "87-test suite incl. modal-gate unit tests; live
+  pane e2e receipts in demos/actions/receipts/ (in-tree)".
+- Review "M4 review (gpt)": started ~02:07, done 02:18. Reported,
+  changes-required, 14 findings. Ran in pane wF:pM.
+- Review "M4 review (opus)": started ~02:55, done 04:04. Reported,
+  changes-required, 17 findings (the reviewer built the pinned tree and
+  probed the runtime claims hands-on).
+- Gate "all milestone reviews settled": fan-in over the eight review
+  tasks above; the last input (M4 opus) landed 04:04 — promotion event
+  then.
+- Selfrun demo lineage (its own task, distinct from M3): attempt 1
+  (01:37) produced a strict-clean file live, but the session receipts
+  (prompt, first-write hash, check log) were not preserved — the gpt M3
+  review judged the claim unauditable. Encode it settled_unverified
+  (the claim is real, the evidence for it is gone). Attempt 2 (02:29)
+  regenerated it with full receipts — but those receipts carried
+  development-environment context that cannot ship, and this
+  regeneration replaces them, so attempt 2's verification artifacts are
+  no longer in the tree: encode attempt 2 as done with evidence
+  "reported" (receipt: "was receipts-verified at generation; receipts
+  since superseded"). Attempt 3 is THIS regeneration — you are it,
+  actor "selfrun-producer-3", working as you write, cause: it
+  supersedes attempt 2 for the public release (the skill's cause
+  vocabulary has a type for exactly this). When your file passes
+  strict-clean you may settle attempt 3 as done, evidence "verified",
+  receipt "dagr check --strict clean; receipts in
+  demos/selfrun/receipts/", IN THE SAME final write.
+- M5 public release preparation: one attempt, working since 02:42
+  (width matrix on real panes, public-tree assembly script with
+  built-in verification, sanitization, dual licensing, README overlay;
+  resumed full-time 04:21 once M4 closed), actor "orchestrator-main".
+  Declare its policy honestly: per the standing rule, on completion M5
+  gets the same dual review — two future review rounds (opus + gpt),
+  attribution planned, not yet dispatched.
+- Publish step: a task for flipping the repository public. It is the
+  human's one-command step by design — model it blocked on the operator
+  (the run's rule keeps publishing manual), depending on M5 and on the
+  all-reviews gate.
+- Run-level metadata: run id and title are yours to choose sensibly;
+  the run started at 2026-08-14T00:05:00-07:00.
+  generated_at = the actual time you write (UTC Z form is fine for
+  generated_at; task/attempt/event timestamps use -07:00 as stated).
+
+Do NOT commit anything. Do NOT read or write anything outside
+demos/selfrun/. When finished, report: files written, number of check
+iterations, and the final check status.

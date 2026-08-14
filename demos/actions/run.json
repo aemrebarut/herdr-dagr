@@ -1,0 +1,65 @@
+{
+  "dagr": 1,
+  "run": {
+    "id": "run-actions-demo-v01",
+    "title": "actions demo: drive a send-back loop through the pane",
+    "started_at": "2026-02-02T09:00:00Z"
+  },
+  "generated_at": "2026-02-02T10:00:00Z",
+  "actions": {
+    "unblock": { "argv": ["python3", "demos/actions/producer.py", "unblock", "{task}", "--by", "{operator}", "--key", "{key}"] },
+    "answer":  { "argv": ["python3", "demos/actions/producer.py", "answer", "{task}", "--text", "{text}", "--by", "{operator}", "--key", "{key}"] },
+    "accept":  { "argv": ["python3", "demos/actions/producer.py", "accept", "{task}", "--attempt", "{attempt}", "--by", "{operator}", "--key", "{key}"] },
+    "reject":  { "argv": ["python3", "demos/actions/producer.py", "reject", "{task}", "--attempt", "{attempt}", "--reason", "{text}", "--reopen", "L1", "--by", "{operator}", "--key", "{key}"] }
+  },
+  "tasks": [
+    {
+      "id": "L1",
+      "title": "impl: the lane under review",
+      "kind": "impl",
+      "owner": "l1-dev",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "L1·a1", "n": 1, "cause": { "type": "initial" },
+          "actor": "l1-dev", "model": "fable", "state": "done",
+          "started_at": "2026-02-02T09:00:00Z", "ended_at": "2026-02-02T09:30:00Z",
+          "outcome": { "result": "done", "evidence": "reported", "receipt": "self-report" }
+        }
+      ]
+    },
+    {
+      "id": "R1",
+      "title": "review: L1 lane",
+      "kind": "review",
+      "owner": "rev-1",
+      "state": "review",
+      "deps": ["L1"],
+      "attempts": [
+        {
+          "id": "R1·a1", "n": 1, "cause": { "type": "initial" },
+          "actor": "rev-1", "model": "opus", "state": "working",
+          "started_at": "2026-02-02T09:35:00Z",
+          "locator": { "pane": "wX:p9" },
+          "liveness": { "prompt_acknowledged": true, "last_output_at": "2026-02-02T09:58:00Z" }
+        }
+      ]
+    },
+    {
+      "id": "B1",
+      "title": "question: needs a human decision",
+      "kind": "question",
+      "owner": "l1-dev",
+      "state": "blocked",
+      "unblock": "operator",
+      "deps": ["L1"],
+      "attempts": []
+    }
+  ],
+  "events": [
+    { "at": "2026-02-02T09:00:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev" },
+    { "at": "2026-02-02T09:30:00Z", "type": "attempt_settled", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev", "detail": "done ◇" },
+    { "at": "2026-02-02T09:35:00Z", "type": "attempt_started", "task": "R1", "attempt": "R1·a1", "actor": "rev-1" }
+  ]
+}

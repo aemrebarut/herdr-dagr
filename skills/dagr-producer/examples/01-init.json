@@ -1,0 +1,7 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: a fresh run", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T09:00:00Z",
+  "tasks": [],
+  "events": []
+}

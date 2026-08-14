@@ -1,0 +1,260 @@
+{
+  "dagr": 1,
+  "run": {
+    "id": "run-state-matrix-v01",
+    "title": "state matrix: every task/attempt state, every evidence tier",
+    "started_at": "2026-02-01T09:00:00Z"
+  },
+  "generated_at": "2026-02-01T10:30:00Z",
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "impl: done, verified",
+      "kind": "impl",
+      "owner": "dev-1",
+      "state": "done",
+      "deps": [],
+      "attempts": [
+        {
+          "id": "T1·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-1",
+          "model": "fable",
+          "state": "done",
+          "started_at": "2026-02-01T09:00:00Z",
+          "ended_at": "2026-02-01T09:20:00Z",
+          "outcome": { "result": "done", "evidence": "verified", "receipt": "tests ✓ 41/41" }
+        }
+      ]
+    },
+    {
+      "id": "T2",
+      "title": "impl: working, live",
+      "kind": "impl",
+      "owner": "dev-2",
+      "state": "working",
+      "deps": ["T1"],
+      "attempts": [
+        {
+          "id": "T2·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-2",
+          "model": "fable",
+          "locator": { "pane": "wX:p1" },
+          "state": "working",
+          "started_at": "2026-02-01T09:25:00Z",
+          "progress": { "done": 2, "total": 5, "note": "adapters" },
+          "liveness": { "prompt_acknowledged": true, "last_output_at": "2026-02-01T10:28:00Z" }
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "title": "review: task review over a working attempt",
+      "kind": "review",
+      "owner": "rev-1",
+      "state": "review",
+      "deps": ["T1"],
+      "attempts": [
+        {
+          "id": "T3·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "rev-1",
+          "model": "opus",
+          "locator": { "pane": "wX:p2" },
+          "state": "working",
+          "started_at": "2026-02-01T09:30:00Z",
+          "liveness": { "prompt_acknowledged": true }
+        }
+      ]
+    },
+    {
+      "id": "T4",
+      "title": "impl: blocked over a working attempt",
+      "kind": "impl",
+      "owner": "dev-4",
+      "state": "blocked",
+      "unblock": "operator",
+      "deps": ["T1"],
+      "note": "waiting on api key",
+      "policy": {
+        "futures": [
+          {
+            "on": "fail",
+            "node": { "id": "T4x·a2", "title": "rescope after block", "actor": "dev-4", "attribution": "predicted" },
+            "loop_back": true,
+            "source": "block-rule"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "id": "T4·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-4",
+          "model": "fable",
+          "locator": { "pane": "wX:p3" },
+          "state": "working",
+          "started_at": "2026-02-01T09:35:00Z",
+          "liveness": { "last_output_at": "2026-02-01T09:50:00Z" }
+        }
+      ]
+    },
+    {
+      "id": "T5",
+      "title": "impl: queued stub, speculates nothing",
+      "kind": "impl",
+      "owner": "dev-5",
+      "state": "queued",
+      "deps": ["T1"],
+      "policy": {
+        "futures": [
+          { "on": "pass", "node": { "id": "T5x·a2", "title": "phantom future on a queued task", "actor": "dev-5" } }
+        ]
+      },
+      "attempts": []
+    },
+    {
+      "id": "T6",
+      "title": "impl: failed via lost runtime",
+      "kind": "impl",
+      "owner": "dev-6",
+      "state": "failed",
+      "deps": ["T1"],
+      "attempts": [
+        {
+          "id": "T6·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-6",
+          "model": "fable",
+          "locator": { "pane": "wX:p9" },
+          "state": "lost",
+          "started_at": "2026-02-01T09:10:00Z",
+          "ended_at": "2026-02-01T09:40:00Z"
+        }
+      ]
+    },
+    {
+      "id": "T7",
+      "title": "impl: rejected by review",
+      "kind": "impl",
+      "owner": "dev-7",
+      "state": "rejected",
+      "deps": ["T1"],
+      "attempts": [
+        {
+          "id": "T7·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-7",
+          "model": "fable",
+          "state": "rejected",
+          "started_at": "2026-02-01T09:05:00Z",
+          "ended_at": "2026-02-01T09:45:00Z",
+          "outcome": { "result": "rejected", "evidence": "reported", "reason": "error paths untested" }
+        }
+      ]
+    },
+    {
+      "id": "T8",
+      "title": "impl: settled without verification",
+      "kind": "impl",
+      "owner": "dev-8",
+      "state": "settled_unverified",
+      "deps": ["T1"],
+      "attempts": [
+        {
+          "id": "T8·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-8",
+          "model": "fable",
+          "state": "settled_unverified",
+          "started_at": "2026-02-01T09:15:00Z",
+          "ended_at": "2026-02-01T09:55:00Z",
+          "outcome": { "result": "settled_unverified", "evidence": "heuristic", "reason": "no result envelope" }
+        }
+      ]
+    },
+    {
+      "id": "T9",
+      "title": "impl: blocked before any attempt",
+      "kind": "impl",
+      "owner": "dev-9",
+      "state": "blocked",
+      "unblock": "operator",
+      "deps": ["T1"],
+      "policy": {
+        "futures": [
+          { "on": "pass", "ref": "T5", "source": "unblock-rule" }
+        ]
+      },
+      "attempts": []
+    },
+    {
+      "id": "T10",
+      "title": "impl: extra deps and a note",
+      "kind": "impl",
+      "owner": "dev-10",
+      "state": "working",
+      "deps": ["T2", "T3", "T7"],
+      "note": "resync@G1",
+      "attempts": [
+        {
+          "id": "T10·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "dev-10",
+          "model": "fable",
+          "locator": { "pane": "wX:p4" },
+          "state": "working",
+          "started_at": "2026-02-01T09:55:00Z",
+          "liveness": { "prompt_acknowledged": true, "last_output_at": "2026-02-01T10:29:00Z" }
+        }
+      ]
+    },
+    {
+      "id": "G1",
+      "title": "gate: waits on live fan-in",
+      "kind": "gate",
+      "owner": "orchestrator",
+      "state": "queued",
+      "deps": [],
+      "inputs": ["T1", "T2", "T6"],
+      "attempts": []
+    },
+    {
+      "id": "G2",
+      "title": "gate: completed with its own attempt",
+      "kind": "gate",
+      "owner": "orchestrator",
+      "state": "done",
+      "deps": [],
+      "inputs": ["T1"],
+      "attempts": [
+        {
+          "id": "G2·a1",
+          "n": 1,
+          "cause": { "type": "initial" },
+          "actor": "orchestrator",
+          "state": "done",
+          "started_at": "2026-02-01T09:21:00Z",
+          "ended_at": "2026-02-01T09:22:00Z",
+          "outcome": { "result": "done", "evidence": "asserted" }
+        }
+      ]
+    }
+  ],
+  "events": [
+    { "at": "2026-02-01T09:00:00Z", "type": "attempt_started", "task": "T1", "attempt": "T1·a1", "actor": "dev-1" },
+    { "at": "2026-02-01T09:20:00Z", "type": "attempt_settled", "task": "T1", "attempt": "T1·a1", "actor": "dev-1", "detail": "done ◆" },
+    { "at": "2026-02-01T09:22:00Z", "type": "promoted", "task": "G2", "actor": "orchestrator", "detail": "fan-in complete: T1" },
+    { "at": "2026-02-01T09:36:00Z", "type": "directive", "verb": "rule", "by": "operator", "task": "T4", "detail": "hold T4 until the api key lands" },
+    { "at": "2026-02-01T10:28:00Z", "type": "note", "task": "T2", "detail": "adapters 2/5" }
+  ]
+}

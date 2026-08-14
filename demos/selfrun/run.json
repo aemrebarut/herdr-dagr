@@ -1,0 +1,346 @@
+{
+  "dagr": 1,
+  "run": {
+    "id": "run-herdr-dagr-overnight-v01",
+    "title": "herdr-dagr: autonomous overnight build, dual-reviewed (M0–M5)",
+    "started_at": "2026-08-14T00:05:00-07:00"
+  },
+  "generated_at": "2026-08-14T11:33:30Z",
+  "tasks": [
+    {
+      "id": "M0", "title": "M0: contract freeze + validator", "kind": "impl",
+      "owner": "orchestrator-main", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "M0·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "orchestrator-main",
+        "state": "done",
+        "started_at": "2026-08-14T00:06:00-07:00", "ended_at": "2026-08-14T00:26:00-07:00",
+        "outcome": {"result": "done", "evidence": "verified", "receipt": "samples/run.json + samples/states.json strict-clean under dagr check (in-tree)"}
+      }]
+    },
+    {
+      "id": "M1", "title": "M1: renderer", "kind": "impl",
+      "owner": "orchestrator-main", "state": "done", "deps": ["M0"],
+      "attempts": [
+        {
+          "id": "M1·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T00:27:00-07:00", "ended_at": "2026-08-14T00:45:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "headless snapshot tests passed, but both M1 reviews found defects", "receipt": "review verdicts RM1G·a1 + RM1O·a1: changes-required (20 + 23 findings)"}
+        },
+        {
+          "id": "M1·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "gpt-5.6-sol-reviewer", "ref": "RM1G·a1", "reason": "dual review found defects; revise until findings addressed"},
+          "actor": "orchestrator-main",
+          "state": "done",
+          "started_at": "2026-08-14T01:06:00-07:00", "ended_at": "2026-08-14T01:29:00-07:00",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "renderer/validator regression suite green (tests/, in-tree); every review finding mapped in a revision ledger"}
+        }
+      ]
+    },
+    {
+      "id": "RM1G", "title": "M1 review (gpt)", "kind": "review",
+      "owner": "gpt-5.6-sol-reviewer", "state": "done", "deps": ["M1"],
+      "attempts": [{
+        "id": "RM1G·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "gpt-5.6-sol-reviewer", "model": "gpt-5.6-sol",
+        "locator": {"pane": "wF:pM"},
+        "state": "done",
+        "started_at": "2026-08-14T01:05:00-07:00", "ended_at": "2026-08-14T01:13:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 20 findings"}
+      }]
+    },
+    {
+      "id": "RM1O", "title": "M1 review (opus)", "kind": "review",
+      "owner": "opus-5-reviewer", "state": "done", "deps": ["M1"],
+      "attempts": [{
+        "id": "RM1O·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "opus-5-reviewer", "model": "opus-5",
+        "locator": {"pane": "wF:pK"},
+        "state": "done",
+        "started_at": "2026-08-14T01:05:00-07:00", "ended_at": "2026-08-14T01:15:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 23 findings"}
+      }]
+    },
+    {
+      "id": "GM1", "title": "gate: M1 dual review complete", "kind": "gate",
+      "owner": "orchestrator-main", "state": "queued", "deps": ["RM1G", "RM1O"],
+      "note": "fan-in satisfied 01:15 (promotion event); the merged-ledger work it gated ran inside M1·a2 — no separate gate attempt opened",
+      "attempts": []
+    },
+    {
+      "id": "M2", "title": "M2: herdr integration", "kind": "impl",
+      "owner": "orchestrator-main", "state": "done", "deps": ["M0"],
+      "attempts": [
+        {
+          "id": "M2·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T00:46:00-07:00", "ended_at": "2026-08-14T01:01:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "sent back by the gpt M2 review", "receipt": "review verdict RM2G·a1: changes-required, 11 findings"}
+        },
+        {
+          "id": "M2·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "gpt-5.6-sol-reviewer", "ref": "RM2G·a1", "reason": "11 findings to address"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T01:45:00-07:00", "ended_at": "2026-08-14T01:56:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "fake-daemon session tests + live event-envelope verification green (tests/, in-tree), but the opus M2 review then landed 16 further findings", "receipt": "review verdict RM2O·a1: changes-required, 16 findings"}
+        },
+        {
+          "id": "M2·a3", "n": 3,
+          "cause": {"type": "sent_back", "by": "opus-5-reviewer", "ref": "RM2O·a1", "reason": "16 further findings"},
+          "actor": "orchestrator-main",
+          "state": "done",
+          "started_at": "2026-08-14T02:11:00-07:00", "ended_at": "2026-08-14T02:14:00-07:00",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "regression suite green incl. live pane-focus round trip (tests/, in-tree)"}
+        }
+      ]
+    },
+    {
+      "id": "RM2G", "title": "M2 review (gpt)", "kind": "review",
+      "owner": "gpt-5.6-sol-reviewer", "state": "done", "deps": ["M2"],
+      "attempts": [{
+        "id": "RM2G·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "gpt-5.6-sol-reviewer", "model": "gpt-5.6-sol",
+        "locator": {"pane": "wF:pM"},
+        "state": "done",
+        "started_at": "2026-08-14T01:20:00-07:00", "ended_at": "2026-08-14T01:44:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 11 findings"}
+      }]
+    },
+    {
+      "id": "RM2O", "title": "M2 review (opus)", "kind": "review",
+      "owner": "opus-5-reviewer", "state": "done", "deps": ["M2"],
+      "attempts": [{
+        "id": "RM2O·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "opus-5-reviewer", "model": "opus-5",
+        "locator": {"pane": "wF:pK"},
+        "state": "done",
+        "started_at": "2026-08-14T01:33:00-07:00", "ended_at": "2026-08-14T02:11:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 16 findings"}
+      }]
+    },
+    {
+      "id": "M3", "title": "M3: producer skill + selfrun demo", "kind": "impl",
+      "owner": "orchestrator-main", "state": "done", "deps": ["M0"],
+      "attempts": [
+        {
+          "id": "M3·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T01:30:00-07:00", "ended_at": "2026-08-14T01:37:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "sent back by the gpt M3 review", "receipt": "review verdict RM3G·a1: changes-required, 7 findings"}
+        },
+        {
+          "id": "M3·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "gpt-5.6-sol-reviewer", "ref": "RM3G·a1", "reason": "7 findings incl. unauditable selfrun claim"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T02:06:00-07:00", "ended_at": "2026-08-14T02:29:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "skill revision + first receipts-backed demo regeneration landed, but the opus M3 review found the skill taught shapes without semantics", "receipt": "review verdict RM3O·a1: changes-required, 1 blocker + 3 major (14 findings)"}
+        },
+        {
+          "id": "M3·a3", "n": 3,
+          "cause": {"type": "sent_back", "by": "opus-5-reviewer", "ref": "RM3O·a1", "reason": "1 blocker, 3 major: the skill taught shapes without semantics"},
+          "actor": "orchestrator-main",
+          "state": "done",
+          "started_at": "2026-08-14T02:45:00-07:00", "ended_at": "2026-08-14T02:49:00-07:00",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "skill examples held strict-clean by the test suite (tests/, in-tree)"}
+        }
+      ]
+    },
+    {
+      "id": "RM3G", "title": "M3 review (gpt)", "kind": "review",
+      "owner": "gpt-5.6-sol-reviewer", "state": "done", "deps": ["M3"],
+      "attempts": [{
+        "id": "RM3G·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "gpt-5.6-sol-reviewer", "model": "gpt-5.6-sol",
+        "locator": {"pane": "wF:pM"},
+        "state": "done",
+        "started_at": "2026-08-14T01:58:00-07:00", "ended_at": "2026-08-14T02:05:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 7 findings"}
+      }]
+    },
+    {
+      "id": "RM3O", "title": "M3 review (opus)", "kind": "review",
+      "owner": "opus-5-reviewer", "state": "done", "deps": ["M3"],
+      "attempts": [{
+        "id": "RM3O·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "opus-5-reviewer", "model": "opus-5",
+        "locator": {"pane": "wF:pK"},
+        "state": "done",
+        "started_at": "2026-08-14T02:20:00-07:00", "ended_at": "2026-08-14T02:44:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 14 findings (1 blocker, 3 major)"}
+      }]
+    },
+    {
+      "id": "M4", "title": "M4: confirm-gated actions + flow analytics", "kind": "impl",
+      "owner": "orchestrator-main", "state": "done", "deps": ["M0"],
+      "attempts": [
+        {
+          "id": "M4·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T01:38:00-07:00", "ended_at": "2026-08-14T01:42:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "sent back by the gpt M4 review", "receipt": "review verdict RM4G·a1: changes-required, 14 findings"}
+        },
+        {
+          "id": "M4·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "gpt-5.6-sol-reviewer", "ref": "RM4G·a1", "reason": "producer trust findings"},
+          "actor": "orchestrator-main",
+          "state": "rejected",
+          "started_at": "2026-08-14T02:19:00-07:00", "ended_at": "2026-08-14T02:36:00-07:00",
+          "outcome": {"result": "rejected", "evidence": "reported", "reason": "producer trust fixes landed, but the opus M4 review found 1 blocker: the confirm gate could render off-screen while still armed", "receipt": "review verdict RM4O·a1: changes-required, 17 findings (1 blocker)"}
+        },
+        {
+          "id": "M4·a3", "n": 3,
+          "cause": {"type": "sent_back", "by": "opus-5-reviewer", "ref": "RM4O·a1", "reason": "blocker: confirm gate could render off-screen while still armed"},
+          "actor": "orchestrator-main",
+          "state": "done",
+          "started_at": "2026-08-14T04:05:00-07:00", "ended_at": "2026-08-14T04:21:00-07:00",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "87-test suite incl. modal-gate unit tests; live pane e2e receipts in demos/actions/receipts/ (in-tree)"}
+        }
+      ]
+    },
+    {
+      "id": "RM4G", "title": "M4 review (gpt)", "kind": "review",
+      "owner": "gpt-5.6-sol-reviewer", "state": "done", "deps": ["M4"],
+      "attempts": [{
+        "id": "RM4G·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "gpt-5.6-sol-reviewer", "model": "gpt-5.6-sol",
+        "locator": {"pane": "wF:pM"},
+        "state": "done",
+        "started_at": "2026-08-14T02:07:00-07:00", "ended_at": "2026-08-14T02:18:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 14 findings"}
+      }]
+    },
+    {
+      "id": "RM4O", "title": "M4 review (opus)", "kind": "review",
+      "owner": "opus-5-reviewer", "state": "done", "deps": ["M4"],
+      "attempts": [{
+        "id": "RM4O·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "opus-5-reviewer", "model": "opus-5",
+        "locator": {"pane": "wF:pK"},
+        "state": "done",
+        "started_at": "2026-08-14T02:55:00-07:00", "ended_at": "2026-08-14T04:04:00-07:00",
+        "outcome": {"result": "done", "evidence": "reported", "receipt": "review verdict: changes-required, 17 findings; reviewer built the pinned tree and probed the runtime claims hands-on"}
+      }]
+    },
+    {
+      "id": "GALL", "title": "gate: all milestone reviews settled", "kind": "gate",
+      "owner": "orchestrator-main", "state": "queued",
+      "deps": ["RM1G", "RM1O", "RM2G", "RM2O", "RM3G", "RM3O", "RM4G", "RM4O"],
+      "note": "fan-in satisfied 04:04 (last input: M4 review (opus)); promotion recorded as event — consumed by the publish step",
+      "attempts": []
+    },
+    {
+      "id": "SR", "title": "selfrun demo: receipts-backed run file of this build", "kind": "docs",
+      "owner": "orchestrator-main", "state": "done", "deps": ["M3"],
+      "attempts": [
+        {
+          "id": "SR·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "selfrun-producer-1",
+          "state": "settled_unverified",
+          "started_at": "2026-08-14T01:30:00-07:00", "ended_at": "2026-08-14T01:37:00-07:00",
+          "outcome": {"result": "settled_unverified", "evidence": "asserted", "reason": "a strict-clean file was produced live, but the session receipts (prompt, first-write hash, check log) were not preserved; the gpt M3 review judged the claim unauditable — the claim is real, the evidence for it is gone"}
+        },
+        {
+          "id": "SR·a2", "n": 2,
+          "cause": {"type": "sent_back", "by": "gpt-5.6-sol-reviewer", "ref": "RM3G·a1", "reason": "selfrun claim unauditable without receipts"},
+          "actor": "selfrun-producer-2",
+          "state": "done",
+          "started_at": "2026-08-14T02:06:00-07:00", "ended_at": "2026-08-14T02:29:00-07:00",
+          "outcome": {"result": "done", "evidence": "reported", "receipt": "was receipts-verified at generation; receipts since superseded"}
+        },
+        {
+          "id": "SR·a3", "n": 3,
+          "cause": {"type": "superseded", "by": "orchestrator-main", "ref": "SR·a2", "reason": "supersedes attempt 2 for the public release: its receipts carried development-environment context that cannot ship"},
+          "actor": "selfrun-producer-3",
+          "state": "done",
+          "started_at": "2026-08-14T04:27:00-07:00", "ended_at": "2026-08-14T04:33:30-07:00",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "dagr check --strict clean; receipts in demos/selfrun/receipts/"}
+        }
+      ]
+    },
+    {
+      "id": "M5", "title": "M5: public release preparation", "kind": "impl",
+      "owner": "orchestrator-main", "state": "working",
+      "deps": ["M0", "M1", "M2", "M3", "M4"],
+      "note": "width matrix on real panes; public-tree assembly script with built-in verification; sanitization; dual licensing; README overlay",
+      "attempts": [{
+        "id": "M5·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "orchestrator-main",
+        "locator": {"agent": "orchestrator-main"},
+        "state": "working",
+        "started_at": "2026-08-14T02:42:00-07:00",
+        "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-08-14T04:33:00-07:00", "queued_input": 0}
+      }],
+      "policy": {"futures": [
+        {"on": "pass", "node": {"id": "RM5O·a1", "title": "M5 review (opus)", "actor": "opus-5-reviewer", "model": "opus-5", "attribution": "planned"}, "source": "standing rule: dual review per milestone"},
+        {"on": "pass", "node": {"id": "RM5G·a1", "title": "M5 review (gpt)", "actor": "gpt-5.6-sol-reviewer", "model": "gpt-5.6-sol", "attribution": "planned"}, "source": "standing rule: dual review per milestone"}
+      ]}
+    },
+    {
+      "id": "PUB", "title": "publish: flip the repository public", "kind": "ship",
+      "owner": "operator", "state": "blocked", "deps": ["M5", "GALL"],
+      "unblock": "operator",
+      "note": "publishing stays manual by the standing rule — the operator's one-command step",
+      "attempts": []
+    }
+  ],
+  "events": [
+    {"at": "2026-08-14T00:05:00-07:00", "type": "directive", "verb": "rule", "by": "operator", "detail": "standing rule: run M0–M5 autonomously; every milestone gets two independent reviews (opus-5 + gpt-5.6-sol); revise until findings are addressed; commit everything; publishing stays manual"},
+    {"at": "2026-08-14T00:06:00-07:00", "type": "attempt_started", "task": "M0", "attempt": "M0·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T00:26:00-07:00", "type": "attempt_settled", "task": "M0", "attempt": "M0·a1", "actor": "orchestrator-main", "detail": "done: samples strict-clean under dagr check"},
+    {"at": "2026-08-14T00:27:00-07:00", "type": "attempt_started", "task": "M1", "attempt": "M1·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T00:46:00-07:00", "type": "attempt_started", "task": "M2", "attempt": "M2·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T01:05:00-07:00", "type": "attempt_started", "task": "RM1G", "attempt": "RM1G·a1", "actor": "gpt-5.6-sol-reviewer"},
+    {"at": "2026-08-14T01:05:00-07:00", "type": "attempt_started", "task": "RM1O", "attempt": "RM1O·a1", "actor": "opus-5-reviewer"},
+    {"at": "2026-08-14T01:06:00-07:00", "type": "attempt_started", "task": "M1", "attempt": "M1·a2", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T01:13:00-07:00", "type": "attempt_settled", "task": "RM1G", "attempt": "RM1G·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "changes-required, 20 findings"},
+    {"at": "2026-08-14T01:15:00-07:00", "type": "attempt_settled", "task": "RM1O", "attempt": "RM1O·a1", "actor": "opus-5-reviewer", "detail": "changes-required, 23 findings"},
+    {"at": "2026-08-14T01:15:00-07:00", "type": "attempt_settled", "task": "M1", "attempt": "M1·a1", "actor": "orchestrator-main", "detail": "sent back: dual review changes-required (20 + 23 findings); revision pass already open as M1·a2"},
+    {"at": "2026-08-14T01:15:00-07:00", "type": "promoted", "task": "GM1", "detail": "fan-in complete: M1 review (gpt) ✓, M1 review (opus) ✓; merged-ledger work ran inside M1·a2"},
+    {"at": "2026-08-14T01:20:00-07:00", "type": "attempt_started", "task": "RM2G", "attempt": "RM2G·a1", "actor": "gpt-5.6-sol-reviewer"},
+    {"at": "2026-08-14T01:29:00-07:00", "type": "attempt_settled", "task": "M1", "attempt": "M1·a2", "actor": "orchestrator-main", "detail": "done: regression suite green; findings mapped in revision ledger"},
+    {"at": "2026-08-14T01:30:00-07:00", "type": "attempt_started", "task": "M3", "attempt": "M3·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T01:30:00-07:00", "type": "attempt_started", "task": "SR", "attempt": "SR·a1", "actor": "selfrun-producer-1"},
+    {"at": "2026-08-14T01:33:00-07:00", "type": "attempt_started", "task": "RM2O", "attempt": "RM2O·a1", "actor": "opus-5-reviewer"},
+    {"at": "2026-08-14T01:38:00-07:00", "type": "attempt_started", "task": "M4", "attempt": "M4·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T01:44:00-07:00", "type": "attempt_settled", "task": "RM2G", "attempt": "RM2G·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "changes-required, 11 findings"},
+    {"at": "2026-08-14T01:44:00-07:00", "type": "attempt_settled", "task": "M2", "attempt": "M2·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "sent back: 11 findings"},
+    {"at": "2026-08-14T01:45:00-07:00", "type": "attempt_started", "task": "M2", "attempt": "M2·a2", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T01:58:00-07:00", "type": "attempt_started", "task": "RM3G", "attempt": "RM3G·a1", "actor": "gpt-5.6-sol-reviewer"},
+    {"at": "2026-08-14T02:05:00-07:00", "type": "attempt_settled", "task": "RM3G", "attempt": "RM3G·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "changes-required, 7 findings"},
+    {"at": "2026-08-14T02:05:00-07:00", "type": "attempt_settled", "task": "M3", "attempt": "M3·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "sent back: 7 findings"},
+    {"at": "2026-08-14T02:05:00-07:00", "type": "attempt_settled", "task": "SR", "attempt": "SR·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "settled unverified: strict-clean claim real but unauditable — session receipts not preserved"},
+    {"at": "2026-08-14T02:06:00-07:00", "type": "attempt_started", "task": "M3", "attempt": "M3·a2", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T02:06:00-07:00", "type": "attempt_started", "task": "SR", "attempt": "SR·a2", "actor": "selfrun-producer-2"},
+    {"at": "2026-08-14T02:07:00-07:00", "type": "attempt_started", "task": "RM4G", "attempt": "RM4G·a1", "actor": "gpt-5.6-sol-reviewer"},
+    {"at": "2026-08-14T02:11:00-07:00", "type": "attempt_settled", "task": "RM2O", "attempt": "RM2O·a1", "actor": "opus-5-reviewer", "detail": "changes-required, 16 findings"},
+    {"at": "2026-08-14T02:11:00-07:00", "type": "attempt_settled", "task": "M2", "attempt": "M2·a2", "actor": "opus-5-reviewer", "detail": "sent back: 16 further findings"},
+    {"at": "2026-08-14T02:11:00-07:00", "type": "attempt_started", "task": "M2", "attempt": "M2·a3", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T02:14:00-07:00", "type": "attempt_settled", "task": "M2", "attempt": "M2·a3", "actor": "orchestrator-main", "detail": "done: suite green incl. live pane-focus round trip"},
+    {"at": "2026-08-14T02:18:00-07:00", "type": "attempt_settled", "task": "RM4G", "attempt": "RM4G·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "changes-required, 14 findings"},
+    {"at": "2026-08-14T02:18:00-07:00", "type": "attempt_settled", "task": "M4", "attempt": "M4·a1", "actor": "gpt-5.6-sol-reviewer", "detail": "sent back: 14 findings (producer trust)"},
+    {"at": "2026-08-14T02:19:00-07:00", "type": "attempt_started", "task": "M4", "attempt": "M4·a2", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T02:20:00-07:00", "type": "attempt_started", "task": "RM3O", "attempt": "RM3O·a1", "actor": "opus-5-reviewer"},
+    {"at": "2026-08-14T02:29:00-07:00", "type": "attempt_settled", "task": "SR", "attempt": "SR·a2", "actor": "selfrun-producer-2", "detail": "done: regenerated with full receipts (receipts later superseded)"},
+    {"at": "2026-08-14T02:42:00-07:00", "type": "attempt_started", "task": "M5", "attempt": "M5·a1", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T02:44:00-07:00", "type": "attempt_settled", "task": "RM3O", "attempt": "RM3O·a1", "actor": "opus-5-reviewer", "detail": "changes-required, 14 findings (1 blocker, 3 major)"},
+    {"at": "2026-08-14T02:44:00-07:00", "type": "attempt_settled", "task": "M3", "attempt": "M3·a2", "actor": "opus-5-reviewer", "detail": "sent back: skill taught shapes without semantics"},
+    {"at": "2026-08-14T02:45:00-07:00", "type": "attempt_started", "task": "M3", "attempt": "M3·a3", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T02:49:00-07:00", "type": "attempt_settled", "task": "M3", "attempt": "M3·a3", "actor": "orchestrator-main", "detail": "done: skill examples held strict-clean by the test suite"},
+    {"at": "2026-08-14T02:55:00-07:00", "type": "attempt_started", "task": "RM4O", "attempt": "RM4O·a1", "actor": "opus-5-reviewer"},
+    {"at": "2026-08-14T04:04:00-07:00", "type": "attempt_settled", "task": "RM4O", "attempt": "RM4O·a1", "actor": "opus-5-reviewer", "detail": "changes-required, 17 findings; built the pinned tree and probed runtime claims hands-on"},
+    {"at": "2026-08-14T04:04:00-07:00", "type": "attempt_settled", "task": "M4", "attempt": "M4·a2", "actor": "opus-5-reviewer", "detail": "sent back: 1 blocker — confirm gate could render off-screen while still armed"},
+    {"at": "2026-08-14T04:04:00-07:00", "type": "promoted", "task": "GALL", "detail": "fan-in complete: all eight milestone reviews settled; last input M4 review (opus)"},
+    {"at": "2026-08-14T04:05:00-07:00", "type": "attempt_started", "task": "M4", "attempt": "M4·a3", "actor": "orchestrator-main"},
+    {"at": "2026-08-14T04:21:00-07:00", "type": "attempt_settled", "task": "M4", "attempt": "M4·a3", "actor": "orchestrator-main", "detail": "done: 87-test suite incl. modal-gate unit tests; e2e receipts in demos/actions/receipts/"},
+    {"at": "2026-08-14T04:21:00-07:00", "type": "note", "task": "M5", "detail": "M5 resumed full-time now that M4 is closed"},
+    {"at": "2026-08-14T04:27:00-07:00", "type": "attempt_started", "task": "SR", "attempt": "SR·a3", "actor": "selfrun-producer-3"},
+    {"at": "2026-08-14T04:33:30-07:00", "type": "attempt_settled", "task": "SR", "attempt": "SR·a3", "actor": "selfrun-producer-3", "detail": "done: run file strict-clean; receipts preserved in demos/selfrun/receipts/"}
+  ]
+}

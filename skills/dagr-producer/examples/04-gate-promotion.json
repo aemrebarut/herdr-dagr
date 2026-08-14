@@ -1,0 +1,48 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: gate fan-in promotion", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T11:35:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: core lane", "kind": "impl",
+      "owner": "l1-dev", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "l1-dev", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:05:00Z", "ended_at": "2026-03-01T10:40:00Z",
+        "outcome": {"result": "done", "evidence": "verified", "receipt": "cargo test 40/40 ✓ @ a1b2c3d"}
+      }]
+    },
+    {
+      "id": "L2", "title": "impl: adapter lane", "kind": "impl",
+      "owner": "l2-dev", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "L2·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "l2-dev", "model": "fable",
+        "state": "done",
+        "started_at": "2026-03-01T09:10:00Z", "ended_at": "2026-03-01T11:05:00Z",
+        "outcome": {"result": "done", "evidence": "verified", "receipt": "integration suite green @ d4e5f6a"}
+      }]
+    },
+    {
+      "id": "G1", "title": "gate: merge lanes", "kind": "gate",
+      "owner": "orchestrator", "state": "working", "deps": ["L1", "L2"],
+      "attempts": [{
+        "id": "G1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "orchestrator", "model": "fable",
+        "locator": {"pane": "wX:p5"},
+        "state": "working", "started_at": "2026-03-01T11:30:00Z",
+        "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-03-01T11:33:00Z"}
+      }]
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:05:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"},
+    {"at": "2026-03-01T09:10:00Z", "type": "attempt_started", "task": "L2", "attempt": "L2·a1", "actor": "l2-dev"},
+    {"at": "2026-03-01T10:40:00Z", "type": "attempt_settled", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"},
+    {"at": "2026-03-01T11:05:00Z", "type": "attempt_settled", "task": "L2", "attempt": "L2·a1", "actor": "l2-dev"},
+    {"at": "2026-03-01T11:28:00Z", "type": "promoted", "task": "G1", "detail": "fan-in complete: L1 ✓, L2 ✓"},
+    {"at": "2026-03-01T11:30:00Z", "type": "attempt_started", "task": "G1", "attempt": "G1·a1", "actor": "orchestrator"}
+  ]
+}

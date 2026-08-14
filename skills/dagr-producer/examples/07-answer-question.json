@@ -1,0 +1,36 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: settle a question by directive", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T09:45:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: retry loop", "kind": "impl",
+      "owner": "l1-dev", "state": "working", "deps": ["Q1"],
+      "attempts": [{
+        "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "l1-dev", "model": "fable",
+        "locator": {"pane": "wX:p3"},
+        "state": "working", "started_at": "2026-03-01T09:43:00Z",
+        "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-03-01T09:44:00Z", "queued_input": 0}
+      }]
+    },
+    {
+      "id": "Q1", "title": "question: retry budget?", "kind": "question",
+      "owner": "operator", "state": "done", "deps": [],
+      "attempts": [{
+        "id": "Q1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "operator",
+        "state": "done",
+        "started_at": "2026-03-01T09:40:00Z", "ended_at": "2026-03-01T09:42:00Z",
+        "outcome": {"result": "done", "evidence": "reported",
+                    "receipt": "directive answer: retry budget 2 rounds"}
+      }]
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:40:00Z", "type": "attempt_started", "task": "Q1", "attempt": "Q1·a1", "actor": "operator"},
+    {"at": "2026-03-01T09:42:00Z", "type": "directive", "verb": "answer", "by": "operator", "task": "Q1", "detail": "retry budget 2 rounds"},
+    {"at": "2026-03-01T09:42:00Z", "type": "attempt_settled", "task": "Q1", "attempt": "Q1·a1", "actor": "operator"},
+    {"at": "2026-03-01T09:43:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"}
+  ]
+}

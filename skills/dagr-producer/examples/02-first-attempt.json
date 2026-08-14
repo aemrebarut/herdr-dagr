@@ -1,0 +1,21 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: first attempt", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T09:05:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: core lane", "kind": "impl",
+      "owner": "l1-dev", "state": "working", "deps": [],
+      "attempts": [{
+        "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+        "actor": "l1-dev", "model": "fable",
+        "locator": {"pane": "wX:p3"},
+        "state": "working", "started_at": "2026-03-01T09:05:00Z",
+        "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-03-01T09:05:00Z"}
+      }]
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:05:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"}
+  ]
+}

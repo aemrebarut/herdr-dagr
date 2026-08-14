@@ -1,0 +1,43 @@
+{
+  "dagr": 1,
+  "run": {"id": "run-example-v01", "title": "example: future materialized as a real attempt", "started_at": "2026-03-01T09:00:00Z"},
+  "generated_at": "2026-03-01T10:05:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: core lane", "kind": "impl",
+      "owner": "l1-dev", "state": "working", "deps": [],
+      "attempts": [
+        {
+          "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l1-dev", "model": "fable",
+          "state": "failed",
+          "started_at": "2026-03-01T09:05:00Z", "ended_at": "2026-03-01T09:55:00Z",
+          "outcome": {"result": "failed", "evidence": "verified", "receipt": "cargo test: 3 failing"}
+        },
+        {
+          "id": "L1·a2", "n": 2,
+          "cause": {"type": "followup", "by": "l1-dev", "ref": "L1·a1", "reason": "fix round (declared by policy)"},
+          "actor": "l1-dev", "model": "fable",
+          "locator": {"pane": "wX:p3"},
+          "state": "working", "started_at": "2026-03-01T10:00:00Z",
+          "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-03-01T10:03:00Z"}
+        }
+      ],
+      "policy": {"rounds_max": 3, "futures": [
+        {"on": "pass", "ref": "G1"},
+        {"on": "fail", "streak": 2,
+         "node": {"id": "L1x·a1", "title": "escalate: fresh approach", "attribution": "predicted"},
+         "source": "two-strikes rule"}
+      ]}
+    },
+    {
+      "id": "G1", "title": "gate: merge", "kind": "gate",
+      "owner": "orchestrator", "state": "queued", "deps": ["L1"], "attempts": []
+    }
+  ],
+  "events": [
+    {"at": "2026-03-01T09:05:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev"},
+    {"at": "2026-03-01T09:55:00Z", "type": "attempt_settled", "task": "L1", "attempt": "L1·a1", "actor": "l1-dev", "detail": "failed: 3 tests red"},
+    {"at": "2026-03-01T10:00:00Z", "type": "attempt_started", "task": "L1", "attempt": "L1·a2", "actor": "l1-dev", "detail": "policy fix round 1/3"}
+  ]
+}

@@ -1,0 +1,186 @@
+{
+  "dagr": 1,
+  "run": {
+    "id": "run-assemble-v01",
+    "title": "assemble: six-lane build → G2",
+    "started_at": "2026-08-13T14:02:00Z"
+  },
+  "generated_at": "2026-08-13T16:02:00Z",
+  "tasks": [
+    {
+      "id": "L1", "title": "impl: core contract lane", "kind": "impl",
+      "owner": "l1-dev", "state": "done", "deps": [],
+      "attempts": [
+        {
+          "id": "L1·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l1-dev", "model": "fable·xhigh", "state": "done",
+          "started_at": "2026-08-13T14:05:00Z", "ended_at": "2026-08-13T14:38:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "gate: cargo test ✓"}
+        }
+      ]
+    },
+    {
+      "id": "L2", "title": "impl: adapters lane", "kind": "impl",
+      "owner": "l2-dev", "state": "done", "deps": [],
+      "attempts": [
+        {
+          "id": "L2·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l2-dev", "model": "sol5.6·max", "state": "done",
+          "started_at": "2026-08-13T14:05:00Z", "ended_at": "2026-08-13T14:35:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "gate: cargo test ✓"}
+        }
+      ]
+    },
+    {
+      "id": "L3", "title": "impl: cli lane", "kind": "impl",
+      "owner": "l3-dev", "state": "done", "deps": [],
+      "attempts": [
+        {
+          "id": "L3·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l3-dev", "model": "fable·xhigh", "state": "done",
+          "started_at": "2026-08-13T14:05:00Z", "ended_at": "2026-08-13T14:37:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "gate: cargo test ✓"}
+        }
+      ]
+    },
+    {
+      "id": "G1", "title": "gate: merge L1+L2+L3", "kind": "gate",
+      "owner": "main", "state": "done",
+      "deps": ["L1", "L2", "L3"], "inputs": ["L1", "L2", "L3"],
+      "attempts": [
+        {
+          "id": "G1·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "main", "state": "done",
+          "started_at": "2026-08-13T14:38:00Z", "ended_at": "2026-08-13T14:41:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "main@0318197"}
+        }
+      ]
+    },
+    {
+      "id": "L4d", "title": "impl: ui against contract", "kind": "impl",
+      "owner": "l4-dev", "state": "done", "deps": ["G1"],
+      "note": "⇠ rebase@G1",
+      "attempts": [
+        {
+          "id": "L4d·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l4-dev", "model": "fable·xhigh", "state": "done",
+          "started_at": "2026-08-13T14:41:00Z", "ended_at": "2026-08-13T15:10:00Z",
+          "outcome": {"result": "done", "evidence": "reported"}
+        },
+        {
+          "id": "L4d·a2", "n": 2,
+          "cause": {"type": "sent_back", "ref": "L4r·a1", "by": "l4-rev", "reason": "F1–F5 from REVIEW-L4.md"},
+          "actor": "l4-dev", "model": "fable·xhigh", "state": "done",
+          "started_at": "2026-08-13T15:22:00Z", "ended_at": "2026-08-13T15:41:00Z",
+          "outcome": {"result": "done", "evidence": "reported"}
+        }
+      ]
+    },
+    {
+      "id": "L4r", "title": "review: L4 ui lane", "kind": "review",
+      "owner": "l4-rev", "state": "done", "deps": ["L4d"],
+      "attempts": [
+        {
+          "id": "L4r·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l4-rev", "model": "sol5.6·max", "state": "failed",
+          "started_at": "2026-08-13T15:10:00Z", "ended_at": "2026-08-13T15:22:00Z",
+          "outcome": {"result": "failed", "evidence": "verified", "reason": "rollup corruption · scope breach"}
+        },
+        {
+          "id": "L4r·a2", "n": 2,
+          "cause": {"type": "followup", "ref": "L4d·a2", "reason": "re-review: verify fixes"},
+          "actor": "l4-rev", "model": "sol5.6·max", "state": "done",
+          "started_at": "2026-08-13T15:41:00Z", "ended_at": "2026-08-13T15:55:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "pass"}
+        }
+      ]
+    },
+    {
+      "id": "L5d", "title": "impl: electron shell · preloads · defaults", "kind": "impl",
+      "owner": "l5-plan", "state": "done", "deps": ["G1"],
+      "attempts": [
+        {
+          "id": "L5d·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l5-plan", "model": "sol5.6·max", "state": "done",
+          "started_at": "2026-08-13T14:41:00Z", "ended_at": "2026-08-13T15:20:00Z",
+          "outcome": {"result": "done", "evidence": "reported"}
+        }
+      ]
+    },
+    {
+      "id": "L5r", "title": "review: hardened defaults verified", "kind": "review",
+      "owner": "l5-rev", "state": "working", "deps": ["L5d"],
+      "policy": {
+        "rounds_max": 2,
+        "futures": [
+          {"on": "pass", "ref": "G2"},
+          {
+            "on": "fail", "loop_back": true,
+            "node": {"id": "L5d·a2", "title": "fix round: findings from L5r", "actor": "l5-plan", "model": "sol5.6·max", "attribution": "predicted"}
+          },
+          {
+            "on": "fail", "after": "L5d·a2",
+            "node": {"id": "L5r·a2", "title": "re-review — final for the lane", "actor": "l5-rev", "model": "opus5·max", "attribution": "predicted"}
+          },
+          {
+            "on": "fail", "streak": 2, "after": "L5r·a2",
+            "node": {"id": "L5d·a3", "title": "dual-family continuation", "actor": "l5-plan", "model": "fable∥gpt", "attribution": "predicted"},
+            "source": "operator rule: two failed review rounds → dual-family continuation"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "id": "L5r·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l5-rev", "model": "opus5·max", "state": "working",
+          "started_at": "2026-08-13T15:24:00Z",
+          "locator": {"pane": "herdr:ws-main/pane-7"},
+          "liveness": {"prompt_acknowledged": true, "last_output_at": "2026-08-13T15:58:00Z", "queued_input": 0},
+          "progress": {"done": 2, "total": 5, "note": "defaults audit"}
+        }
+      ]
+    },
+    {
+      "id": "L6r", "title": "review: L6 offline lane", "kind": "review",
+      "owner": "l6-rev", "state": "done", "deps": ["G1"],
+      "note": "p1-pass · offline now · re-run @G2",
+      "attempts": [
+        {
+          "id": "L6r·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l6-rev", "model": "opus5·max", "state": "done",
+          "started_at": "2026-08-13T14:50:00Z", "ended_at": "2026-08-13T15:30:00Z",
+          "outcome": {"result": "done", "evidence": "reported", "receipt": "p1-pass"}
+        }
+      ]
+    },
+    {
+      "id": "L7s", "title": "test: security suite", "kind": "test",
+      "owner": "l7-plan", "state": "done", "deps": ["G1"],
+      "attempts": [
+        {
+          "id": "L7s·a1", "n": 1, "cause": {"type": "initial"},
+          "actor": "l7-plan", "model": "sol5.6·max", "state": "done",
+          "started_at": "2026-08-13T15:00:00Z", "ended_at": "2026-08-13T15:35:00Z",
+          "outcome": {"result": "done", "evidence": "verified", "receipt": "suite ✓ 214/214"}
+        }
+      ]
+    },
+    {
+      "id": "G2", "title": "gate: assemble + integration", "kind": "gate",
+      "owner": "orchestrator", "state": "queued",
+      "deps": ["L4r", "L5r", "L6r"], "inputs": ["L4r", "L5r", "L6r"],
+      "attempts": []
+    }
+  ],
+  "events": [
+    {"at": "2026-08-13T14:02:00Z", "type": "note", "detail": "run started"},
+    {"at": "2026-08-13T14:10:00Z", "type": "directive", "verb": "rule", "by": "operator", "detail": "two failed review rounds in a lane → dual-family continuation (fable∥gpt)"},
+    {"at": "2026-08-13T14:41:00Z", "type": "attempt_settled", "attempt": "G1·a1", "detail": "merge gate green"},
+    {"at": "2026-08-13T14:41:00Z", "type": "promoted", "task": "L4d", "detail": "by completion of G1"},
+    {"at": "2026-08-13T14:41:00Z", "type": "promoted", "task": "L5d", "detail": "by completion of G1"},
+    {"at": "2026-08-13T15:22:00Z", "type": "attempt_settled", "attempt": "L4r·a1", "detail": "failed ◆ — rollup corruption · scope breach"},
+    {"at": "2026-08-13T15:22:00Z", "type": "attempt_started", "attempt": "L4d·a2", "detail": "fix round opened by send-back from L4r·a1"},
+    {"at": "2026-08-13T15:24:00Z", "type": "attempt_started", "attempt": "L5r·a1"},
+    {"at": "2026-08-13T15:55:00Z", "type": "attempt_settled", "attempt": "L4r·a2", "detail": "re-review pass ◆"}
+  ]
+}

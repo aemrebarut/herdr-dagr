@@ -1,0 +1,44 @@
+# herdr-plugin.toml — manifest for the dagr plugin.
+#
+# dagr draws a live DAG of an agent swarm from a contract file (CONTRACT.md)
+# in a herdr split pane. The pane renders and focuses; run-state writes only
+# ever come from a producer command the user confirms at a gate — dagr
+# itself never mutates run state. Schema verified against a field plugin on
+# herdr 0.8.0 (top-level keys, [[build]], [[panes]], [[actions]]).
+#
+# The pane command is RELATIVE to the plugin root (herdr launches it from
+# there). The launcher action resolves the user's cwd from ITS context and
+# passes it via `--cwd`; the viewer's own fallback reads
+# HERDR_PLUGIN_CONTEXT_JSON (workspace_cwd → focused_pane_cwd → cwd), see
+# `dagr view --help`.
+
+id = "herdr-dagr"
+name = "herdr-dagr"
+version = "0.1.0"
+description = "Your agent swarm as a live DAG: an orchestration graph with attempts, review gates, and evidence, in a herdr split pane."
+min_herdr_version = "0.8.0"
+platforms = ["linux", "macos"]
+
+# Build from source at install time. A prebuilt-binary fast path may come
+# later; cargo is the only requirement today.
+[[build]]
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/build.sh"]
+
+# The viewer pane. herdr performs the split placement on launch; the
+# [[actions]] below summon it.
+[[panes]]
+id = "dagr"
+title = "dagr"
+placement = "split"
+command = ["./target/release/dagr", "view"]
+
+# Summon the pane (bind to a key in ~/.config/herdr/config.toml, or run
+# `herdr plugin action invoke herdr-dagr open-dagr`).
+[[actions]]
+id = "open-dagr"
+platforms = ["linux", "macos"]
+title = "Open dagr"
+description = "Open the live run DAG in a split pane beside the current work."
+contexts = ["workspace"]
+command = ["bash", "scripts/open-dagr.sh"]

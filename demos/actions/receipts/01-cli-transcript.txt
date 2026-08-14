@@ -1,0 +1,67 @@
+# Reference-producer CLI transcript (regenerated after the M4 reviews).
+# From the repo root: reset.sh re-dates the fixture, then every refusal
+# path, the replay no-op, the send-back (--reopen disclosed in argv),
+# and the final strict check + sane analytics. DAGR_OPERATOR=operator.
+
+$ demos/actions/reset.sh
+run.json re-dated: generated_at -> 2026-08-14T11:19:00Z
+
+# --- refusal paths -------------------------------------------------
+
+$ python3 demos/actions/producer.py accept NOPE --attempt NOPE·a1 --by operator --key cli-key-0
+producer: unknown task 'NOPE'
+[exit 1]
+
+$ python3 demos/actions/producer.py accept R1 --by operator --key cli-key-0
+producer: --attempt is required (name what you confirmed)
+[exit 1]
+
+$ python3 demos/actions/producer.py accept R1 --attempt R1·a9 --by operator --key cli-key-0
+producer: R1 has no attempt 'R1·a9'
+[exit 1]
+
+$ python3 demos/actions/producer.py unblock R1 --by operator --key cli-key-0
+producer: R1 is not blocked
+[exit 1]
+
+# --- unblock the question, then replay the same key ---------------
+
+$ python3 demos/actions/producer.py unblock B1 --by operator --key cli-key-1
+unblock B1 ✓
+
+$ python3 demos/actions/producer.py unblock B1 --by operator --key cli-key-1
+unblock: key cli-key-1 already applied (idempotent no-op)
+
+# --- the send-back: verdict on R1·a1, reopen disclosed in argv ----
+
+$ python3 demos/actions/producer.py reject R1 --attempt R1·a1 --reason error paths untested --reopen L1 --by operator --key cli-key-2
+reject R1 ✓
+
+# --- stale/terminal targets refuse after the send-back ------------
+
+$ python3 demos/actions/producer.py accept L1 --attempt L1·a1 --by operator --key cli-key-3
+producer: L1·a1 is stale — L1·a2 superseded it; re-open the run and confirm against the current attempt
+[exit 1]
+
+$ python3 demos/actions/producer.py reject R1 --attempt R1·a1 --reason again --reopen L1 --by operator --key cli-key-4
+producer: R1·a1 is already done — nothing to settle
+[exit 1]
+
+# --- the after-document: strict-clean, analytics sane -------------
+
+$ dagr check demos/actions/run.json --strict
+✓ clean — 3 tasks, 3 attempts, 7 events
+
+$ dagr stats demos/actions/run.json
+clock: generated_at
+
+task           state                att      age since-start   worked
+L1             queued                 2      60m         60m      30m
+R1             done                   1      25m           —      25m
+B1             queued                 0        —           —        —
+
+wip 0 · blocked 0 · review 0 · queued 2 · settled 1
+rework: 1/2 attempted tasks bounced back (sent_back/gate_failed)
+mean settled attempt: 27m
+critical path (2): L1 → B1 · eta ~54m (naive: length × mean attempt)
+

@@ -1,0 +1,6 @@
+=== check 1: demos/selfrun/run.json.tmp --strict --json ===
+[]
+exit: 0
+=== check 2: demos/selfrun/run.json.tmp --strict --json ===
+[]
+exit: 0

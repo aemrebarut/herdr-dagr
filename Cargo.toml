@@ -1,0 +1,27 @@
+[package]
+name = "dagr"
+version = "0.1.0"
+edition = "2021"
+description = "Your agent swarm as a live DAG: herdr plugin with check/view/stats over a frozen run-state contract."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aemrebarut/herdr-dagr"
+readme = "README.md"
+keywords = ["herdr", "dag", "tui", "agents", "orchestration"]
+categories = ["command-line-utilities", "visualization"]
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossterm = "0.28"
+unicode-width = "0.2"
+
+# already in the tree via crossterm; used directly for the process-group
+# kill (resolving a `kill` binary through PATH is not reliable in a thin
+# plugin environment)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "dagr"
+path = "src/main.rs"
