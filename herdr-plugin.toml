@@ -31,14 +31,29 @@ command = ["/bin/sh", "scripts/build.sh"]
 id = "dagr"
 title = "dagr"
 placement = "split"
-command = ["./target/release/dagr", "view"]
+# The binary is resolved from $HERDR_PLUGIN_ROOT (injected by herdr into
+# pane processes), NOT relatively: herdr resolves a relative argv[0]
+# against the pane's cwd, and the launcher sets --cwd to the USER'S
+# workspace for run-file discovery — a bare "./target/release/dagr"
+# only ever worked when that workspace happened to be this repo.
+command = ["/bin/sh", "-c", "exec \"${HERDR_PLUGIN_ROOT:?not launched by herdr}/target/release/dagr\" view"]
 
 # Summon the pane (bind to a key in ~/.config/herdr/config.toml, or run
-# `herdr plugin action invoke herdr-dagr open-dagr`).
+# `herdr plugin action invoke open-dagr --plugin herdr-dagr`). The
+# launcher takes the split direction as its argument; herdr supports
+# right and down.
 [[actions]]
 id = "open-dagr"
 platforms = ["linux", "macos"]
 title = "Open dagr"
 description = "Open the live run DAG in a split pane beside the current work."
 contexts = ["workspace"]
-command = ["bash", "scripts/open-dagr.sh"]
+command = ["bash", "scripts/open-dagr.sh", "right"]
+
+[[actions]]
+id = "open-dagr-down"
+platforms = ["linux", "macos"]
+title = "Open dagr (below)"
+description = "Open the live run DAG in a split pane below the current work."
+contexts = ["workspace"]
+command = ["bash", "scripts/open-dagr.sh", "down"]

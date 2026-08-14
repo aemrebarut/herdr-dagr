@@ -655,11 +655,12 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
 
 pub fn help_lines() -> Vec<String> {
     let rows = [
-        ("j / k, ↓ / ↑", "move the cursor through the trace"),
+        ("j / k", "move the cursor through the trace"),
         ("tab", "cycle the attention queue (blocked → review → working)"),
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("u / a / o / x", "unblock · answer · accept · reject — producer-declared, confirm-gated"),
         ("r", "reload the run file now"),
+        ("arrows, H/J/K/L", "move this pane left · below · above · right of the work"),
         ("?", "toggle this help"),
         ("q / esc", "quit (esc closes help first)"),
     ];

@@ -291,6 +291,23 @@ impl App {
         self.selected = Some(keys[next].clone());
     }
 
+    /// H/J/K/L (or shift+arrows): re-place our own pane around the
+    /// anchor. Vim directions; left/top need the extra swap because
+    /// herdr splits only go right/down.
+    fn place_pane(&mut self, c: char) {
+        let (split, swap, label) = match c {
+            'H' => ("right", Some("left"), "left"),
+            'J' => ("down", None, "below"),
+            'K' => ("down", Some("up"), "above"),
+            'L' => ("right", None, "right"),
+            _ => return,
+        };
+        self.flash = Some(match crate::herdr::place_self(split, swap) {
+            Ok(()) => (format!("pane placed {label}"), 6),
+            Err(e) => (e, 8),
+        });
+    }
+
     fn cycle_queue(&mut self) {
         let scene = self.scene();
         if scene.queue.is_empty() {
@@ -592,8 +609,17 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                                 return Ok(());
                             }
                         }
-                        Char('j') | Down => app.move_sel(1),
-                        Char('k') | Up => app.move_sel(-1),
+                        // arrows place the PANE; the cursor is j/k (vim
+                        // grammar, like every other key here)
+                        Left | Right | Up | Down => app.place_pane(match k.code {
+                            Left => 'H',
+                            Down => 'J',
+                            Up => 'K',
+                            _ => 'L',
+                        }),
+                        Char(c @ ('H' | 'J' | 'K' | 'L')) => app.place_pane(c),
+                        Char('j') => app.move_sel(1),
+                        Char('k') => app.move_sel(-1),
                         Tab => app.cycle_queue(),
                         Enter => app.focus(),
                         Char('r') => {

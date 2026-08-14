@@ -98,8 +98,9 @@ One responsive pane, two established terminal idioms:
 
 Keys: `j/k` move, `tab` cycles the attention queue, `enter` focuses the
 selected attempt's herdr pane, `u/a/o/x` invoke the producer's declared
-unblock/answer/accept/reject actions, `r` reload, `?` help, `q/esc`
-quit.
+unblock/answer/accept/reject actions, arrow keys (or `H/J/K/L`) move
+the pane itself left/below/above/right of your work pane, `r` reload,
+`?` help, `q/esc` quit.
 
 Both screenshots are real renderer output, regenerable with
 [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py):

@@ -29,9 +29,10 @@ USAGE:
   dagr stats <run.json> [--json]
       flow analytics over per-attempt timestamps: age, time-in-state,
       rework rate, WIP, critical path + naive ETA
-  dagr pane-cwd
-      plumbing for scripts/open-dagr.sh: resolve the user's cwd from
-      $HERDR_PLUGIN_CONTEXT_JSON (prints nothing if unavailable)
+  dagr pane-cwd | dagr pane-anchor
+      plumbing for scripts/open-dagr.sh: resolve the user's cwd / the
+      invoking pane id from $HERDR_PLUGIN_CONTEXT_JSON (print nothing
+      if unavailable)
 
 check exit codes: 0 clean (warnings allowed unless --strict), 1 findings, 2 usage/IO
 ";
@@ -43,6 +44,7 @@ fn main() -> ExitCode {
         Some("view") => cmd_view(&args[1..]),
         Some("stats") => stats::run(&args[1..]),
         Some("pane-cwd") => cmd_pane_cwd(),
+        Some("pane-anchor") => cmd_pane_anchor(),
         Some("--version" | "-V") => {
             println!("dagr {} (contract v1)", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -76,6 +78,26 @@ fn cmd_pane_cwd() -> ExitCode {
         })
     {
         println!("{cwd}");
+    }
+    ExitCode::SUCCESS
+}
+
+/// Resolve the pane the action was invoked FROM (the user's own pane),
+/// for the launcher to hand the viewer as `$DAGR_ANCHOR_PANE` — the
+/// pane that H/J/K/L placement splits against. Same silence-on-absence
+/// contract as `pane-cwd`.
+fn cmd_pane_anchor() -> ExitCode {
+    if let Some(p) = std::env::var("HERDR_PLUGIN_CONTEXT_JSON")
+        .ok()
+        .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+        .and_then(|v| {
+            v.get("focused_pane_id")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+        })
+    {
+        println!("{p}");
     }
     ExitCode::SUCCESS
 }
