@@ -45,6 +45,19 @@ fn every_skill_example_is_strict_clean() {
     assert_dir_strict_clean("skills/dagr-producer/examples", 8);
 }
 
+/// `dagr --skill` is how an agent onboards itself from inside the pane, so
+/// the bundled copy must be the shipped file byte-for-byte: a truncated or
+/// drifted skill teaches the wrong contract with no way to notice.
+#[test]
+fn the_bundled_skill_is_the_shipped_file() {
+    let path = format!("{}/skills/dagr-producer/SKILL.md", env!("CARGO_MANIFEST_DIR"));
+    let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let out = Command::new(dagr()).arg("--skill").output().expect("dagr --skill failed to spawn");
+    assert!(out.status.success(), "dagr --skill exited {:?}", out.status.code());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), on_disk);
+    assert!(on_disk.starts_with("---\nname: dagr-producer\n"), "skill lost its frontmatter");
+}
+
 #[test]
 fn every_sample_is_strict_clean() {
     assert_dir_strict_clean("samples", 2);

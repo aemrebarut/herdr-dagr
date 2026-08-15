@@ -7,6 +7,61 @@ Your agent swarm as a live DAG, in a [herdr](https://herdr.dev) pane.
 > *Dagr* is the Norse personification of day: he rides across the sky once
 > per cycle and illuminates everything below. Also, it's a DAG. With herdr's r.
 
+## FAQ for humans
+
+**What does this do?**
+
+It helps you manage and track agentic workflows involving 5+ agents or steps.
+
+**How does it do it?**
+
+The plan is written as a
+[DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph). Your agents
+update it as they work, and you watch it live in a pane. Click any row to
+see that attempt up close: who ran it, on what model, how long it has been
+going, whether it has gone quiet, and what evidence backs a "done". Press
+enter to jump to that agent's own pane. When your orchestrator offers them,
+you can also unblock, answer, accept, or reject straight from the pane.
+
+**What if I have more questions?**
+
+Ask your agent to read this README. Feeling lazy? Copy this prompt:
+
+```
+Read https://raw.githubusercontent.com/aemrebarut/herdr-dagr/main/README.md
+and tell me what it does and whether it fits the way I run agents.
+```
+
+**No more questions, how do I get this?**
+
+```sh
+herdr plugin install aemrebarut/herdr-dagr                      # the pane
+npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g   # teach your agent to feed it
+```
+
+The first command builds dagr from source, so it needs `cargo`. Don't have
+it? Install Rust first, then run the two commands above:
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+The second command is what makes the pane useful: it installs the producer
+skill, which teaches your agent to write the run file. Nothing is written
+into your agent unless you run it yourself.
+
+Then open the pane from inside herdr, and pick a side with an arrow key:
+
+```sh
+herdr plugin action invoke open-dagr --plugin herdr-dagr
+```
+
+Bind it to a key so you never type that again: see [Install](#install).
+
+---
+
+# The long version
+
 ## The pain point
 
 You kick off a multi-agent run and lose the plot in minutes. Run state
@@ -37,13 +92,24 @@ interpreter.
 
 ## How to use it
 
-Ask your orchestrator agent to use the
-[producer skill](skills/dagr-producer/SKILL.md), then describe what your
-workflow should look like: review loops, parallel lanes, gates, whatever
-you want. The agent maintains the run file, the pane picks it up live,
-and you can iterate on the design with them mid-run. The
-[selfrun demo](demos/selfrun/) is a run file produced exactly this way,
-by an agent onboarded with only the skill.
+Install the producer skill into your agent. It teaches any agent to
+write and maintain the run file:
+
+```sh
+npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g
+```
+
+For an agent without a skill system, paste the file into its
+instructions instead. `dagr --skill` prints the copy bundled with your
+binary, and [`skills/dagr-producer/SKILL.md`](skills/dagr-producer/SKILL.md)
+is the same file here. Nothing is installed into your agent unless you
+run that command yourself.
+
+Then describe what your workflow should look like: review loops,
+parallel lanes, gates, whatever you want. The agent maintains the run
+file, the pane picks it up live, and you can iterate on the design with
+them mid-run. The [selfrun demo](demos/selfrun/) is a run file produced
+exactly this way, by an agent onboarded with only the skill.
 
 ## How it works
 
@@ -113,9 +179,15 @@ Both screenshots are real renderer output, regenerable with
 ```sh
 herdr plugin install aemrebarut/herdr-dagr   # builds via scripts/build.sh (cargo required)
 herdr plugin action invoke open-dagr --plugin herdr-dagr
+npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g   # teach your agent to feed it
 ```
 
 Or from a clone, `herdr plugin link .` at the repo root.
+
+Installing the plugin gives you the pane. The skill is what gives you
+something to draw, and it is a separate opt-in command: nothing writes
+into your agent's config on your behalf. See
+[How to use it](#how-to-use-it).
 
 Bind it to a key in `~/.config/herdr/config.toml`:
 
@@ -141,6 +213,7 @@ export DAGR_RUN=samples/run.json
 dagr view                             # interactive; --snapshot for capture
 dagr check samples/run.json --strict
 dagr stats samples/run.json
+dagr --skill                          # the producer skill, as shipped
 ```
 
 `cargo` is the only build requirement.
@@ -166,8 +239,10 @@ dagr stats samples/run.json
   producer CLI).
 - [`skills/dagr-producer/`](skills/dagr-producer/SKILL.md): the skill
   that teaches any agent to set up and maintain a run graph against the
-  contract, looping on `dagr check` for feedback. Its `examples/` are
-  held strict-clean by the test suite.
+  contract, looping on `dagr check` for feedback. Install it with
+  `npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g`, or
+  print the bundled copy with `dagr --skill`. Its `examples/` are held
+  strict-clean by the test suite.
 - [`assets/`](assets/): the README screenshots, generated from
   `samples/run.json` by [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py).
 

@@ -33,9 +33,20 @@ USAGE:
       plumbing for scripts/open-dagr.sh: resolve the user's cwd / the
       invoking pane id from $HERDR_PLUGIN_CONTEXT_JSON (print nothing
       if unavailable)
+  dagr --skill
+      print the producer skill — the agent-facing instructions for
+      writing and maintaining a run file. Bundled at build time, so the
+      printed copy always matches this binary; the companion examples
+      live beside it in skills/dagr-producer/examples/ under the plugin
+      root ($HERDR_PLUGIN_ROOT inside a herdr pane)
 
 check exit codes: 0 clean (warnings allowed unless --strict), 1 findings, 2 usage/IO
 ";
+
+/// Bundled at build time so the printed skill always matches this binary's
+/// release — and so a tree that shipped the binary without the skill fails
+/// to compile rather than shipping an agent-facing hole.
+const SKILL: &str = include_str!("../skills/dagr-producer/SKILL.md");
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,6 +56,10 @@ fn main() -> ExitCode {
         Some("stats") => stats::run(&args[1..]),
         Some("pane-cwd") => cmd_pane_cwd(),
         Some("pane-anchor") => cmd_pane_anchor(),
+        Some("--skill") => {
+            print!("{SKILL}");
+            ExitCode::SUCCESS
+        }
         Some("--version" | "-V") => {
             println!("dagr {} (contract v1)", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
