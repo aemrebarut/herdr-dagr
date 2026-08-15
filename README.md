@@ -9,21 +9,18 @@ Your agent swarm as a live DAG, in a [herdr](https://herdr.dev) pane.
 
 ## FAQ for humans
 
-**What does this do?**
+### What does this do?
 
 It helps you manage and track agentic workflows involving 5+ agents or steps.
 
-**How does it do it?**
+### How does it do it?
 
-The plan is written as a
-[DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph). Your agents
-update it as they work, and you watch it live in a pane. Click any row to
-see that attempt up close: who ran it, on what model, how long it has been
-going, whether it has gone quiet, and what evidence backs a "done". Press
-enter to jump to that agent's own pane. When your orchestrator offers them,
-you can also unblock, answer, accept, or reject straight from the pane.
+Your plan is a [DAG](https://en.wikipedia.org/wiki/Directed_acyclic_graph),
+and your agents keep it current as they work. You watch it live in a pane,
+and click any row to see who ran it, how long it took, and whether anyone
+actually checked the result.
 
-**What if I have more questions?**
+### What if I have more questions?
 
 Ask your agent to read this README. Feeling lazy? Copy this prompt:
 
@@ -32,21 +29,15 @@ Read https://raw.githubusercontent.com/aemrebarut/herdr-dagr/main/README.md
 and tell me what it does and whether it fits the way I run agents.
 ```
 
-**No more questions, how do I get this?**
+### No more questions, how do I get this?
 
 ```sh
-herdr plugin install aemrebarut/herdr-dagr                      # the pane
-npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g   # teach your agent to feed it
+command -v cargo || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # dagr builds from source, so it needs cargo
+herdr plugin install aemrebarut/herdr-dagr                                           # the pane
+npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g                        # teach your agent to feed it
 ```
 
-The first command builds dagr from source, so it needs `cargo`. Don't have
-it? Install Rust first, then run the two commands above:
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-The second command is what makes the pane useful: it installs the producer
+The last command is what makes the pane useful: it installs the producer
 skill, which teaches your agent to write the run file. Nothing is written
 into your agent unless you run it yourself.
 
@@ -167,7 +158,9 @@ selected attempt's herdr pane, `u/a/o/x` invoke the producer's declared
 unblock/answer/accept/reject actions, arrow keys (or `H/J/K/L`) move
 the pane itself left/below/above/right of your work pane, `r` reload,
 `?` help, `q/esc` quit. The mouse works too: click a trace row or a
-queue item to select it, scroll to move the cursor. Actions stay
+queue item to select it, scroll to move the cursor, and drag across
+anything to select text, which lands on your clipboard when you let go
+(same as herdr, including the argv inside a confirm gate). Actions stay
 keyboard-only on purpose; a stray click can't confirm anything.
 
 Both screenshots are real renderer output, regenerable with

@@ -4,7 +4,7 @@
 //! reference. The renderer never crashes on bad input: contract errors
 //! become a banner, and the last good scene stays up.
 
-use crate::{action, check, contract::Doc, herdr, model, render, stats};
+use crate::{action, check, contract::Doc, herdr, model, render, select, stats};
 use crossterm::{
     cursor, event, execute,
     terminal::{self, ClearType},
@@ -239,6 +239,11 @@ struct App {
     hits: Vec<render::Hit>,
     view_start: usize,
     view_rows: usize,
+    /// The painted lines of the last draw, kept so a copy returns exactly
+    /// what was on screen.
+    frame: Vec<String>,
+    /// Live mouse text selection, in frame-line coordinates.
+    sel: Option<select::Sel>,
 }
 
 impl App {
@@ -367,6 +372,21 @@ impl App {
             }
             None => {}
         }
+    }
+
+    /// Plain text of the live selection, line by line, as it looked on
+    /// screen. Trailing blanks go: nobody wants the pad columns a block
+    /// drag ran through.
+    fn selection_text(&self, width: usize) -> String {
+        let Some(sel) = self.sel else { return String::new() };
+        let ((l0, _), (l1, _)) = sel.span();
+        let mut out: Vec<String> = Vec::new();
+        for line in l0..=l1 {
+            let Some(painted) = self.frame.get(line) else { continue };
+            let Some((c0, c1)) = sel.cols_on(line, width) else { continue };
+            out.push(select::slice(painted, c0, c1).trim_end().to_string());
+        }
+        out.join("\n")
     }
 
     fn focus(&mut self) {
@@ -521,6 +541,9 @@ impl App {
     }
 
     fn reload(&mut self) {
+        // the frame is about to be rebuilt from a new revision; a
+        // highlight anchored to the old lines would frame the wrong text
+        self.sel = None;
         // an open modal points at the document it was built from;
         // carrying the intent silently across a revision can apply it
         // to state the human never saw
@@ -574,6 +597,8 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         hits: Vec::new(),
         view_start: 0,
         view_rows: 0,
+        frame: Vec::new(),
+        sel: None,
     };
     // the placement hint only makes sense where placement works: inside
     // herdr, on a fresh pane, before the user has touched anything
@@ -635,6 +660,9 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                     use event::KeyCode::*;
                     // any keypress proves the hint was read
                     app.place_hint = false;
+                    // a keystroke moves on: the highlight belongs to the
+                    // mouse gesture that made it
+                    app.sel = None;
                     // modal keys first: while typing, 'q' is a letter
                     match std::mem::replace(&mut app.mode, Mode::Normal) {
                         m @ (Mode::Input { .. } | Mode::Confirm { .. }) => {
@@ -715,22 +743,58 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                 event::Event::Mouse(m) => {
                     use event::{MouseButton, MouseEventKind};
                     app.place_hint = false;
-                    // mouse never answers a modal: gates and prompts are
-                    // keyboard-only on purpose (a stray click must not
-                    // confirm anything)
-                    if matches!(app.mode, Mode::Normal) {
-                        match m.kind {
-                            MouseEventKind::ScrollDown if !app.help => app.move_sel(1),
-                            MouseEventKind::ScrollUp if !app.help => app.move_sel(-1),
-                            MouseEventKind::Down(MouseButton::Left) => {
+                    let (col, row) = (m.column as usize, m.row as usize);
+                    let normal = matches!(app.mode, Mode::Normal);
+                    match m.kind {
+                        // press → drag → release IS the selection, and it
+                        // runs in every mode: copying the argv out of a
+                        // confirm gate is reading, not answering. What the
+                        // mouse still cannot do in a modal is act.
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            app.sel = (row < app.view_rows)
+                                .then(|| select::Sel::new(app.view_start + row, col));
+                        }
+                        MouseEventKind::Drag(MouseButton::Left) => {
+                            if let Some(sel) = app.sel.as_mut() {
+                                sel.to(app.view_start + row.min(app.view_rows.saturating_sub(1)), col);
+                            }
+                        }
+                        MouseEventKind::Up(MouseButton::Left) => {
+                            let dragged = app.sel.is_some_and(|s| s.dragged);
+                            if dragged {
+                                // herdr's contract with the user: let go of
+                                // a selection and it is on the clipboard
+                                let (w, _) = terminal::size().map_err(|e| e.to_string())?;
+                                let text = app.selection_text(w as usize);
+                                if !text.is_empty() {
+                                    write!(stdout, "{}", select::osc52(&text))
+                                        .map_err(|e| e.to_string())?;
+                                    let n = text.lines().count();
+                                    let unit = if n == 1 { "line" } else { "lines" };
+                                    app.flash = Some((format!("copied {n} {unit}"), 8));
+                                }
+                            } else if normal {
+                                // a plain click: interactive rows select,
+                                // everything else just drops the highlight
                                 if app.help {
                                     app.help = false;
                                 } else {
-                                    app.click(m.column as usize, m.row as usize);
+                                    app.click(col, row);
                                 }
+                                app.sel = None;
+                            } else {
+                                app.sel = None;
                             }
-                            _ => {}
                         }
+                        MouseEventKind::ScrollDown if normal && !app.help => {
+                            app.sel = None;
+                            app.move_sel(1);
+                        }
+                        MouseEventKind::ScrollUp if normal && !app.help => {
+                            app.sel = None;
+                            app.move_sel(-1);
+                        }
+                        _ => {}
                     }
                 }
                 event::Event::Resize(_, _) => {}
@@ -833,9 +897,16 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
         terminal::Clear(ClearType::All)
     )
     .map_err(|e| e.to_string())?;
-    for (i, line) in lines.iter().skip(start).take(visible.max(1)).enumerate() {
+    app.frame = lines;
+    for (i, idx) in (start..app.frame.len()).take(visible.max(1)).enumerate() {
+        let line = &app.frame[idx];
         execute!(stdout, cursor::MoveTo(0, i as u16)).map_err(|e| e.to_string())?;
-        write!(stdout, "{line}").map_err(|e| e.to_string())?;
+        match app.sel.and_then(|s| s.cols_on(idx, w)) {
+            Some((c0, c1)) => {
+                write!(stdout, "{}", select::highlight(line, c0, c1)).map_err(|e| e.to_string())?
+            }
+            None => write!(stdout, "{line}").map_err(|e| e.to_string())?,
+        }
     }
     stdout.flush().map_err(|e| e.to_string())
 }

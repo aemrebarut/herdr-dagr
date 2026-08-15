@@ -9,6 +9,7 @@ mod contract;
 mod herdr;
 mod model;
 mod render;
+mod select;
 mod stats;
 mod style;
 mod view;

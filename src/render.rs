@@ -712,6 +712,7 @@ pub fn help_lines() -> Vec<String> {
         ("r", "reload the run file now"),
         ("arrows, H/J/K/L", "move this pane left · below · above · right of the work"),
         ("mouse", "click selects a row or queue item · wheel moves the cursor"),
+        ("drag", "select text · copied to the clipboard when you let go"),
         ("?", "toggle this help"),
         ("q / esc", "quit (esc closes help first)"),
     ];
