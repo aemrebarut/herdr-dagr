@@ -15,8 +15,8 @@ herdr_bin="${HERDR_BIN_PATH:-herdr}"
 plugin_id="${HERDR_PLUGIN_ID:-herdr-dagr}"
 
 # Placement, from the action's argv. herdr splits only know right and
-# down, so left/up open as right/down and then swap across (the same
-# trick the viewer's arrow keys use).
+# down, so left/up open as right/down and then swap across. Placement is
+# the action's job: bind the side you want in ~/.config/herdr/config.toml.
 place="${1:-right}"
 case "$place" in
   right) direction="right"; swap="" ;;
@@ -31,12 +31,8 @@ esac
 # plugin-link time and sits next to this script's parent.
 dagr_bin="$(cd "$(dirname "$0")/.." && pwd)/target/release/dagr"
 run_cwd=""
-anchor=""
 if [ -x "$dagr_bin" ]; then
   run_cwd=$("$dagr_bin" pane-cwd 2>/dev/null || true)
-  # the pane this action was invoked from — the viewer's H/J/K/L
-  # placement keys split against it
-  anchor=$("$dagr_bin" pane-anchor 2>/dev/null || true)
 fi
 
 args=(plugin pane open
@@ -47,9 +43,6 @@ args=(plugin pane open
   --focus)
 if [ -n "$run_cwd" ]; then
   args+=(--cwd "$run_cwd")
-fi
-if [ -n "$anchor" ]; then
-  args+=(--env "DAGR_ANCHOR_PANE=$anchor")
 fi
 
 if [ -z "$swap" ]; then

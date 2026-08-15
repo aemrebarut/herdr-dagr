@@ -41,13 +41,15 @@ The last command is what makes the pane useful: it installs the producer
 skill, which teaches your agent to write the run file. Nothing is written
 into your agent unless you run it yourself.
 
-Then open the pane from inside herdr, and pick a side with an arrow key:
+Then open the pane from inside herdr:
 
 ```sh
 herdr plugin action invoke open-dagr --plugin herdr-dagr
 ```
 
-Bind it to a key so you never type that again: see [Install](#install).
+There is one action per side (`open-dagr-right`, `-down`, `-up`,
+`-left`), so bind the one you want to a key and it always opens there:
+see [Install](#install).
 
 ---
 
@@ -155,9 +157,8 @@ One responsive pane, two established terminal idioms:
 
 Keys: `j/k` move, `tab` cycles the attention queue, `enter` focuses the
 selected attempt's herdr pane, `u/a/o/x` invoke the producer's declared
-unblock/answer/accept/reject actions, arrow keys (or `H/J/K/L`) move
-the pane itself left/below/above/right of your work pane, `r` reload,
-`?` help, `q/esc` quit. The mouse works too: click a trace row or a
+unblock/answer/accept/reject actions, `r` reload, `?` help, `q/esc`
+quit. The mouse works too: click a trace row or a
 queue item to select it, scroll to move the cursor, and drag across
 anything to select text, which lands on your clipboard when you let go
 (same as herdr, including the argv inside a confirm gate). Actions stay
@@ -192,10 +193,9 @@ command = "herdr-dagr.open-dagr"
 description = "open dagr run DAG in split"
 ```
 
-Then one arrow key places the pane (left/below/above/right of your
-work) and hands focus back. Prefer a fixed spot? Bind
+That opens it to the right. Want it somewhere else? Bind
 `open-dagr-down`, `open-dagr-up`, `open-dagr-left`, or
-`open-dagr-right` instead.
+`open-dagr-right` instead, one key per side.
 
 Or standalone, without herdr:
 

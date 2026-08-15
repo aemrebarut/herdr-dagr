@@ -6,7 +6,7 @@
 
 use crate::{action, check, contract::Doc, herdr, model, render, select, stats};
 use crossterm::{
-    cursor, event, execute,
+    cursor, event, execute, queue,
     terminal::{self, ClearType},
 };
 use std::io::Write;
@@ -112,7 +112,6 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
             watching: false,
             herdr: None, // hints are a live concern too
             prompt: None,
-            place_hint: false, // placement is a live-in-herdr concern
         },
         w,
     );
@@ -231,8 +230,6 @@ struct App {
     /// In-flight focus result (focus runs off-thread; even a bounded CLI
     /// wait has no business freezing the render loop).
     bg_rx: Option<std::sync::mpsc::Receiver<String>>,
-    /// First-open placement hint: shown until the first interaction.
-    place_hint: bool,
     /// Clickable regions of the last drawn frame, plus the viewport the
     /// frame was drawn through — a click is (column, terminal row) and
     /// only means something relative to that exact draw.
@@ -244,6 +241,9 @@ struct App {
     frame: Vec<String>,
     /// Live mouse text selection, in frame-line coordinates.
     sel: Option<select::Sel>,
+    /// Bytes of the last painted screen. An identical frame is skipped
+    /// rather than repainted.
+    painted: Vec<u8>,
 }
 
 impl App {
@@ -303,23 +303,6 @@ impl App {
             Some(i) => (i as i64 + delta).clamp(0, keys.len() as i64 - 1) as usize,
         };
         self.selected = Some(keys[next].clone());
-    }
-
-    /// H/J/K/L (or shift+arrows): re-place our own pane around the
-    /// anchor. Vim directions; left/top need the extra swap because
-    /// herdr splits only go right/down.
-    fn place_pane(&mut self, c: char) {
-        let (split, swap, label) = match c {
-            'H' => ("right", Some("left"), "left"),
-            'J' => ("down", None, "below"),
-            'K' => ("down", Some("up"), "above"),
-            'L' => ("right", None, "right"),
-            _ => return,
-        };
-        self.flash = Some(match crate::herdr::place_self(split, swap) {
-            Ok(()) => (format!("pane placed {label}"), 6),
-            Err(e) => (e, 8),
-        });
     }
 
     fn cycle_queue(&mut self) {
@@ -593,16 +576,13 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         mode: Mode::Normal,
         gate_seen: false,
         bg_rx: None,
-        place_hint: false,
         hits: Vec::new(),
         view_start: 0,
         view_rows: 0,
         frame: Vec::new(),
         sel: None,
+        painted: Vec::new(),
     };
-    // the placement hint only makes sense where placement works: inside
-    // herdr, on a fresh pane, before the user has touched anything
-    app.place_hint = app.herdr.is_some();
     app.update_watch();
     if app.selected.is_none() {
         // start on the most urgent thing, like a human would
@@ -658,8 +638,6 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
             match event::read().map_err(|e| e.to_string())? {
                 event::Event::Key(k) if k.kind != event::KeyEventKind::Release => {
                     use event::KeyCode::*;
-                    // any keypress proves the hint was read
-                    app.place_hint = false;
                     // a keystroke moves on: the highlight belongs to the
                     // mouse gesture that made it
                     app.sel = None;
@@ -694,25 +672,6 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                                 return Ok(());
                             }
                         }
-                        // arrows place the PANE; the cursor is j/k (vim
-                        // grammar, like every other key here). Press only,
-                        // never key-repeat: one keystroke, one final
-                        // placement — focus lands back on the work pane.
-                        Left | Right | Up | Down
-                            if k.kind == event::KeyEventKind::Press =>
-                        {
-                            app.place_pane(match k.code {
-                                Left => 'H',
-                                Down => 'J',
-                                Up => 'K',
-                                _ => 'L',
-                            });
-                        }
-                        Char(c @ ('H' | 'J' | 'K' | 'L'))
-                            if k.kind == event::KeyEventKind::Press =>
-                        {
-                            app.place_pane(c);
-                        }
                         Char('j') => app.move_sel(1),
                         Char('k') => app.move_sel(-1),
                         Tab => app.cycle_queue(),
@@ -742,7 +701,6 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                 }
                 event::Event::Mouse(m) => {
                     use event::{MouseButton, MouseEventKind};
-                    app.place_hint = false;
                     let (col, row) = (m.column as usize, m.row as usize);
                     let normal = matches!(app.mode, Mode::Normal);
                     match m.kind {
@@ -797,7 +755,11 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         _ => {}
                     }
                 }
-                event::Event::Resize(_, _) => {}
+                event::Event::Resize(_, _) => {
+                    // a resize is the one moment the screen can hold
+                    // garbage we did not put there: repaint unconditionally
+                    app.painted.clear();
+                }
                 _ => {}
             }
         }
@@ -870,7 +832,6 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
                 watching: true,
                 herdr: hints.as_ref(),
                 prompt: app.prompt_line(),
-                place_hint: app.place_hint,
             },
             w,
         );
@@ -891,23 +852,40 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     // `y` stays inert until a draw proved that
     app.gate_seen =
         modal && prompt_line.is_some_and(|p| p >= start && lines.len() <= start + visible);
-    execute!(
-        stdout,
-        cursor::MoveTo(0, 0),
-        terminal::Clear(ClearType::All)
-    )
-    .map_err(|e| e.to_string())?;
     app.frame = lines;
+    // Paint into ONE buffer and write it in ONE syscall. The old path
+    // flushed a full-screen Clear on its own and then flushed again per
+    // line, so the terminal had a genuinely blank screen to draw between
+    // them — that is the flicker. Each row now ends with a clear-to-EOL
+    // instead, which erases the old content of that row in the same write
+    // that draws the new one.
+    let mut buf: Vec<u8> = Vec::with_capacity(w * visible.max(1) + 64);
+    let mut drawn = 0usize;
     for (i, idx) in (start..app.frame.len()).take(visible.max(1)).enumerate() {
         let line = &app.frame[idx];
-        execute!(stdout, cursor::MoveTo(0, i as u16)).map_err(|e| e.to_string())?;
+        queue!(buf, cursor::MoveTo(0, i as u16)).map_err(|e| e.to_string())?;
         match app.sel.and_then(|s| s.cols_on(idx, w)) {
-            Some((c0, c1)) => {
-                write!(stdout, "{}", select::highlight(line, c0, c1)).map_err(|e| e.to_string())?
-            }
-            None => write!(stdout, "{line}").map_err(|e| e.to_string())?,
+            Some((c0, c1)) => write!(buf, "{}", select::highlight(line, c0, c1)),
+            None => write!(buf, "{line}"),
         }
+        .map_err(|e| e.to_string())?;
+        queue!(buf, terminal::Clear(ClearType::UntilNewLine)).map_err(|e| e.to_string())?;
+        drawn = i + 1;
     }
+    // rows the frame no longer reaches (it shrank, or the terminal grew)
+    for i in drawn..visible {
+        queue!(buf, cursor::MoveTo(0, i as u16), terminal::Clear(ClearType::UntilNewLine))
+            .map_err(|e| e.to_string())?;
+    }
+    // An identical frame is not worth a repaint: the event loop wakes on a
+    // 300ms poll timeout whether or not anything happened, and repainting
+    // an unchanged screen three times a second is the other half of the
+    // flicker.
+    if buf == app.painted {
+        return Ok(());
+    }
+    stdout.write_all(&buf).map_err(|e| e.to_string())?;
+    app.painted = buf;
     stdout.flush().map_err(|e| e.to_string())
 }
 

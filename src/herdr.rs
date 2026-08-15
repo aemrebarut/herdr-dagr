@@ -485,50 +485,6 @@ pub fn focus_agent(name: &str) -> Result<(), String> {
     socket_request("agent.focus", serde_json::json!({"target": name}))
 }
 
-/// Re-place our own pane inside its tab. Composed from three herdr
-/// primitives, because no single one can do it:
-///  - `pane.move` refuses a same-tab destination (`reason: same_tab`),
-///    so the pane BOUNCES through `new_tab` first (the emptied temp tab
-///    auto-closes) and reattaches with the wanted split axis;
-///  - the split enum only knows right/down, so "left" is
-///    split-right-then-`pane.swap`-left and "top" is
-///    split-down-then-swap-up.
-/// The anchor is the pane the launcher opened us beside
-/// (`$DAGR_ANCHOR_PANE`); without one the tab root is split.
-pub fn place_self(split: &str, swap: Option<&str>) -> Result<(), String> {
-    let pane = std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "not a herdr pane".to_string())?;
-    let tab = std::env::var("HERDR_TAB_ID")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "not a herdr pane".to_string())?;
-    let mut dest = serde_json::json!({"type": "tab", "tab_id": tab, "split": split});
-    if let Ok(a) = std::env::var("DAGR_ANCHOR_PANE") {
-        if !a.is_empty() && a != pane {
-            dest["target_pane_id"] = serde_json::Value::String(a);
-        }
-    }
-    socket_request(
-        "pane.move",
-        serde_json::json!({"pane_id": pane, "destination": {"type": "new_tab"}}),
-    )?;
-    socket_request("pane.move", serde_json::json!({"pane_id": pane, "destination": dest}))?;
-    if let Some(d) = swap {
-        socket_request("pane.swap", serde_json::json!({"pane_id": pane, "direction": d}))?;
-    }
-    // placement is FINAL: hand focus back to the work pane, so the
-    // prefix+d → arrow chord ends with the user where they started
-    // (and further arrows type into their own pane, not this one)
-    let back = dest
-        .get("target_pane_id")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-        .unwrap_or(pane);
-    socket_request("pane.focus", serde_json::json!({"pane_id": back}))
-}
-
 // ── tests: envelope fixtures from a live protocol-19 daemon ─────────
 
 #[cfg(all(test, unix))]

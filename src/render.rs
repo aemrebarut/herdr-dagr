@@ -484,9 +484,6 @@ pub struct FrameInput<'a> {
     pub herdr: Option<&'a crate::herdr::Hints>,
     /// Modal action prompt (M4): the text-input / confirm-gate line.
     pub prompt: Option<String>,
-    /// First-open placement hint: drawn until the first interaction, and
-    /// only inside herdr (placement needs the socket).
-    pub place_hint: bool,
 }
 
 /// What a left-click on a frame region means. The renderer owns the
@@ -548,15 +545,6 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         // the frame instead of wrapping the terminal (F18)
         let mut l = Line::new(w);
         l.put(1, &format!("⚠ {b}"), Style::bold(style::BLOCKED));
-        out.push(l.render(None, false));
-    }
-    if input.place_hint {
-        let mut l = Line::new(w);
-        l.put(
-            1,
-            "▸ press an arrow or H/J/K/L to place this pane · ← left ↓ below ↑ above → right",
-            Style::bold(style::ACCENT),
-        );
         out.push(l.render(None, false));
     }
     out.push(String::new()); // spacer
@@ -710,7 +698,6 @@ pub fn help_lines() -> Vec<String> {
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("u / a / o / x", "unblock · answer · accept · reject — producer-declared, confirm-gated"),
         ("r", "reload the run file now"),
-        ("arrows, H/J/K/L", "move this pane left · below · above · right of the work"),
         ("mouse", "click selects a row or queue item · wheel moves the cursor"),
         ("drag", "select text · copied to the clipboard when you let go"),
         ("?", "toggle this help"),
@@ -746,7 +733,7 @@ mod tests {
         serde_json::from_str(&raw).expect("sample parses")
     }
 
-    fn frame(doc: &Doc, w: usize, place_hint: bool) -> (Frame, model::Scene) {
+    fn frame(doc: &Doc, w: usize) -> (Frame, model::Scene) {
         let scene = model::build(doc, None, None, None);
         let f = compose(
             &FrameInput {
@@ -759,7 +746,6 @@ mod tests {
                 watching: false,
                 herdr: None,
                 prompt: None,
-                place_hint,
             },
             w,
         );
@@ -768,25 +754,10 @@ mod tests {
     }
 
     #[test]
-    fn place_hint_is_drawn_only_when_asked() {
-        let doc = sample();
-        let (with, _) = frame(&doc, 120, true);
-        assert!(
-            with.lines.iter().any(|l| l.contains("place this pane")),
-            "hint line missing"
-        );
-        let (without, _) = frame(&doc, 120, false);
-        assert!(
-            !without.lines.iter().any(|l| l.contains("place this pane")),
-            "hint must be opt-in (snapshots stay clean)"
-        );
-    }
-
-    #[test]
     fn hits_cover_rows_and_queue_in_both_layouts() {
         let doc = sample();
         for w in [150usize, 72] {
-            let (f, scene) = frame(&doc, w, false);
+            let (f, scene) = frame(&doc, w);
             let rows = f
                 .hits
                 .iter()
