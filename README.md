@@ -155,18 +155,39 @@ One responsive pane, two established terminal idioms:
 
 ![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
 
-Keys: `j/k` move, `tab` cycles the attention queue, `enter` focuses the
-selected attempt's herdr pane, `u/a/o/x` invoke the producer's declared
-unblock/answer/accept/reject actions, `r` reload, `?` help, `q/esc`
-quit. The mouse works too: click a trace row or a
-queue item to select it, scroll to move the cursor, and drag across
-anything to select text, which lands on your clipboard when you let go
-(same as herdr, including the argv inside a confirm gate). Actions stay
-keyboard-only on purpose; a stray click can't confirm anything.
-
 Both screenshots are real renderer output, regenerable with
 [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py):
 `dagr view samples/run.json --snapshot --width 150 | scripts/snapshot-svg.py out.svg`.
+
+## Navigation
+
+The basics: `j/k` move (`g/G` jump to the ends, `ctrl-d/u` half-page),
+`tab` cycles the attention queue, `enter` focuses the selected
+attempt's herdr pane, `u/a/o/x` invoke the producer's declared
+unblock/answer/accept/reject actions, `r` reload, `?` help, `q` quit.
+
+Big runs get noisy, so the tree folds and zooms. `←` folds the branch
+under the cursor down to one row with a `▸ n hidden` chip; the chip
+keeps the counts that matter (blocked, lost, review), so folding never
+buries an alarm. `→` unfolds, and on an open branch it zooms: the
+subtree takes over the pane with a breadcrumb up top, and anything
+outside that still needs eyes shows as a `+n need eyes outside`
+counter, so zooming can't hide trouble either. `z` folds everything
+that has settled, in one press. `esc` backs out of help, picker,
+search, and zoom before it ever quits.
+
+Finding things is quick too: `f` opens a file picker that lists your
+recent runs first and scans nearby folders in the background, so
+switching runs is a few keystrokes, not a filesystem crawl. `/` filters
+rows by id, name, or agent as you type, `n/N` walk the matches, and `y`
+copies the selected row id to your clipboard.
+
+The mouse works too: click a trace row or a queue item to select it,
+click a `▸` chip to unfold it, double-click a row to zoom into it,
+scroll to move the cursor, and drag across anything to select text,
+which lands on your clipboard when you let go (same as herdr, including
+the argv inside a confirm gate). Actions stay keyboard-only on purpose;
+a stray click can't confirm anything.
 
 ## Install
 

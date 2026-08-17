@@ -28,8 +28,9 @@ fn seg_put(line: &mut Line, mut x: usize, segs: &[Seg], limit: usize) -> usize {
 }
 
 /// One full-grammar trace row, responsive: model/status/agent columns
-/// hang off the right edge.
-fn full_row(row: &Row, w: usize, selected: bool) -> String {
+/// hang off the right edge. Also returns the column span of the fold
+/// chip when one was drawn, so a click on it can toggle the fold.
+fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     let model_x = w.saturating_sub(44);
     let st_x = w.saturating_sub(31);
     let ag_x = w.saturating_sub(21);
@@ -52,6 +53,14 @@ fn full_row(row: &Row, w: usize, selected: bool) -> String {
         Style { fg: Some(row.glyph_color), bold: row.hot, dim: false }
     };
     x = l.put(x, &format!(" {}", row.name), name_style);
+    // the fold chip sits BEFORE the title: on a folded row the fold is
+    // the fact, and a long title must never push it off the row
+    let mut fold_span = None;
+    if let Some(f) = &row.fold {
+        let fx = x + 2;
+        x = seg_put(&mut l, fx, &f.segs, model_x.saturating_sub(1));
+        fold_span = Some((fx, x));
+    }
     x += 2;
     let title_room = model_x.saturating_sub(x + 1);
     let title_style = if row.dotted {
@@ -75,11 +84,11 @@ fn full_row(row: &Row, w: usize, selected: bool) -> String {
     l.put(model_x, &trunc(&row.model, 12), Style::dim(style::MUTED));
     seg_put(&mut l, st_x, &row.status, ag_x.saturating_sub(1));
     l.put(ag_x, &trunc(&row.agent, w - ag_x), Style::dim(style::MUTED));
-    l.render(if selected { Some(style::SEL_BG) } else { None }, true)
+    (l.render(if selected { Some(style::SEL_BG) } else { None }, true), fold_span)
 }
 
 /// Narrow two-column row for the sidecar's left panel.
-fn compact_row(row: &Row, w: usize, selected: bool) -> String {
+fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     let mut l = Line::new(w);
     if row.lit {
         l.put(0, "▍", Style::bold(style::ACCENT));
@@ -98,6 +107,14 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> String {
         Style { fg: Some(row.glyph_color), bold: row.hot, dim: false }
     };
     x = l.put(x, &format!(" {}", row.name), name_style);
+    // the fold marker survives compaction: ▸ + hidden count, tinted by
+    // the strongest attention state inside the fold
+    let mut fold_span = None;
+    if let Some(f) = &row.fold {
+        let fx = x + 1;
+        x = l.put(fx, &format!("▸{}", f.hidden), Style::bold(f.hot.unwrap_or(style::ACCENT)));
+        fold_span = Some((fx, x));
+    }
     // the right-aligned status tail is sized FIRST — the title gets what
     // is left of it, so a truncated title can never run under the state
     // word (the "atteBLOCKED" bug the width matrix caught)
@@ -169,7 +186,7 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> String {
             sx = l.put(sx, s, *st);
         }
     }
-    l.render(if selected { Some(style::SEL_BG) } else { None }, true)
+    (l.render(if selected { Some(style::SEL_BG) } else { None }, true), fold_span)
 }
 
 // ── focus card ──────────────────────────────────────────────────────
@@ -443,10 +460,15 @@ pub fn focus_card(
 
 pub fn queue_panel(scene: &Scene, qw: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    lines.push(
-        paint(" attention", Style::bold(style::ACCENT))
-            + &paint(&format!("  {} need eyes", scene.queue.len()), Style::dim(style::MUTED)),
-    );
+    let mut head = paint(" attention", Style::bold(style::ACCENT))
+        + &paint(&format!("  {} need eyes", scene.queue.len()), Style::dim(style::MUTED));
+    if let Some(z) = &scene.zoom {
+        if z.outside > 0 {
+            // a zoom narrows the queue; what it cut out stays counted
+            head += &paint(&format!(" · +{} outside", z.outside), Style::bold(style::BLOCKED));
+        }
+    }
+    lines.push(head);
     for item in &scene.queue {
         let mut l = Line::new(qw);
         // the selection is an attempt/future key; the queue thinks in
@@ -495,6 +517,8 @@ pub enum HitTarget {
     Row(String),
     /// jump to this task's latest attempt (attention-queue item)
     Task(String),
+    /// toggle this row's fold open (the ▸ chip)
+    Fold(String),
 }
 
 pub struct Hit {
@@ -530,6 +554,18 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         let mut l = Line::new(w);
         let limit = w.saturating_sub(1);
         let mut x = l.put(1, &trunc(&scene.run_title, limit.saturating_sub(1)), Style::bold(style::TEXT));
+        if let Some(z) = &scene.zoom {
+            // the breadcrumb keeps a zoomed view from passing as the whole
+            // run — and names what attention the zoom cropped out
+            x = l.put(x + 1, &trunc(&format!("▸ {}", z.root), limit.saturating_sub(x + 1)), Style::bold(style::ACCENT));
+            if z.outside > 0 {
+                x = l.put(
+                    x + 2,
+                    &trunc(&format!("+{} need eyes outside", z.outside), limit.saturating_sub(x + 2)),
+                    Style::bold(style::BLOCKED),
+                );
+            }
+        }
         if x + 3 < limit {
             x = l.put(x + 3, &trunc(&scene.run_meta, limit - x - 3), Style::dim(style::MUTED));
         }
@@ -560,7 +596,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         if let Some(k) = sel {
             right.extend(focus_card(input.doc, k, right_w, input.herdr));
         }
-        let left: Vec<String> = scene
+        let left: Vec<(String, Option<(usize, usize)>)> = scene
             .rows
             .iter()
             .map(|r| {
@@ -577,6 +613,13 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             sel_line = Some(base + i);
         }
         for (i, r) in scene.rows.iter().enumerate() {
+            // the fold chip's hit is narrower than the row's and must win:
+            // click resolution takes the first match, so it goes in first
+            if let Some((x0, x1)) = left[i].1 {
+                if x1 > x0 {
+                    hits.push(Hit { line: base + i, x0, x1, target: HitTarget::Fold(r.key.clone()) });
+                }
+            }
             if r.selectable {
                 hits.push(Hit { line: base + i, x0: 0, x1: left_w, target: HitTarget::Row(r.key.clone()) });
             }
@@ -591,9 +634,10 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             });
         }
         for i in 0..rows_n {
-            let l = left.get(i).cloned().unwrap_or_else(|| {
-                Line::new(left_w).render(None, true)
-            });
+            let l = left
+                .get(i)
+                .map(|(s, _)| s.clone())
+                .unwrap_or_else(|| Line::new(left_w).render(None, true));
             let r = right.get(i).cloned().unwrap_or_default();
             out.push(format!("{l}  {r}"));
         }
@@ -605,14 +649,19 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             sel_line = Some(base + i);
         }
         for (i, r) in scene.rows.iter().enumerate() {
-            if r.selectable {
-                hits.push(Hit { line: base + i, x0: 0, x1: w, target: HitTarget::Row(r.key.clone()) });
-            }
-            let line = if w >= 96 {
+            let (line, fold_span) = if w >= 96 {
                 full_row(r, w, sel == Some(r.key.as_str()))
             } else {
                 compact_row(r, w, sel == Some(r.key.as_str()))
             };
+            if let Some((x0, x1)) = fold_span {
+                if x1 > x0 {
+                    hits.push(Hit { line: base + i, x0, x1, target: HitTarget::Fold(r.key.clone()) });
+                }
+            }
+            if r.selectable {
+                hits.push(Hit { line: base + i, x0: 0, x1: w, target: HitTarget::Row(r.key.clone()) });
+            }
             out.push(line);
         }
         out.push(String::new());
@@ -670,8 +719,10 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
                 avail = w - tw - 3;
             }
         }
-        let full = "j/k move · tab queue · enter focus · u/a/o/x act · r reload · ? help · q quit";
-        let mid = "j/k · tab · enter · u/a/o/x · r · ? · q";
+        // curated, not complete — the flash shares this row and must keep
+        // room to speak; `?` holds the full list
+        let full = "j/k move · ←/→ fold/zoom · tab queue · enter focus · u/a/o/x act · f open · ? help · q quit";
+        let mid = "j/k · ←/→ · tab · enter · u/a/o/x · f · ? · q";
         let keys = if full.width() < avail {
             full
         } else if mid.width() < avail {
@@ -694,18 +745,26 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
 pub fn help_lines() -> Vec<String> {
     let rows = [
         ("j / k", "move the cursor through the trace"),
+        ("→ / l", "zoom the trace to the selected branch (a folded row opens first)"),
+        ("← / h", "fold the branch · on a folded or leaf row, jump to its parent"),
+        ("z", "fold every settled branch — the trace shows what still needs you · again unfolds"),
+        ("g / G", "top · bottom of the trace"),
+        ("ctrl-d / ctrl-u", "half a screen down · up"),
         ("tab", "cycle the attention queue (blocked → review → working)"),
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("u / a / o / x", "unblock · answer · accept · reject — producer-declared, confirm-gated"),
+        ("f", "open another run file (type to filter · recent files first)"),
+        ("/", "find a row by id, title, or agent · n/N cycle the matches"),
+        ("y", "copy the selected row id to the clipboard"),
         ("r", "reload the run file now"),
-        ("mouse", "click selects a row or queue item · wheel moves the cursor"),
+        ("mouse", "click selects · double-click zooms · a ▸ chip click unfolds · wheel moves"),
         ("drag", "select text · copied to the clipboard when you let go"),
         ("?", "toggle this help"),
-        ("q / esc", "quit (esc closes help first)"),
+        ("q / esc", "quit (esc backs out of help and zoom first)"),
     ];
     let mut out = vec![paint(" keys", Style::bold(style::ACCENT))];
     for (k, v) in rows {
-        out.push(format!("   {}  {}", paint(&format!("{k:14}"), Style::fg(style::TEXT)), paint(v, Style::dim(style::MUTED))));
+        out.push(format!("   {}  {}", paint(&format!("{k:15}"), Style::fg(style::TEXT)), paint(v, Style::dim(style::MUTED))));
     }
     out.push(String::new());
     out.push(paint(
@@ -734,7 +793,7 @@ mod tests {
     }
 
     fn frame(doc: &Doc, w: usize) -> (Frame, model::Scene) {
-        let scene = model::build(doc, None, None, None);
+        let scene = model::build(doc, None, None, None, &model::ViewOpts::default());
         let f = compose(
             &FrameInput {
                 doc,
@@ -749,7 +808,7 @@ mod tests {
             },
             w,
         );
-        let scene = model::build(doc, None, None, None);
+        let scene = model::build(doc, None, None, None, &model::ViewOpts::default());
         (f, scene)
     }
 
@@ -779,6 +838,51 @@ mod tests {
                 assert!(h.line < f.lines.len(), "w={w}: hit line in frame");
                 assert!(h.x0 < h.x1 && h.x1 <= w, "w={w}: hit span sane");
             }
+        }
+    }
+
+    #[test]
+    fn fold_chip_hit_precedes_the_row_hit_in_both_layouts() {
+        let doc = sample();
+        let base = model::build(&doc, None, None, None, &model::ViewOpts::default());
+        let target = base
+            .rows
+            .iter()
+            .find(|r| r.has_kids)
+            .expect("sample has a branch")
+            .key
+            .clone();
+        let mut folded = std::collections::HashSet::new();
+        folded.insert(target.clone());
+        for w in [150usize, 72] {
+            let scene =
+                model::build(&doc, None, None, None, &model::ViewOpts { zoom: None, folded: Some(&folded) });
+            let f = compose(
+                &FrameInput {
+                    doc: &doc,
+                    scene: &scene,
+                    selected: None,
+                    banner: None,
+                    flash: None,
+                    stale_min: None,
+                    watching: false,
+                    herdr: None,
+                    prompt: None,
+                },
+                w,
+            );
+            let fold_pos = f
+                .hits
+                .iter()
+                .position(|h| matches!(&h.target, HitTarget::Fold(k) if *k == target))
+                .unwrap_or_else(|| panic!("w={w}: folded row must expose a chip hit"));
+            let row_pos = f
+                .hits
+                .iter()
+                .position(|h| matches!(&h.target, HitTarget::Row(k) if *k == target))
+                .expect("row hit");
+            assert!(fold_pos < row_pos, "w={w}: the chip hit must win click resolution");
+            assert_eq!(f.hits[fold_pos].line, f.hits[row_pos].line, "w={w}: same line");
         }
     }
 }

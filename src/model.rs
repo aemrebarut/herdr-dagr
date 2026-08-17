@@ -36,6 +36,23 @@ pub struct Row {
     pub lit: bool,
     pub tag: Option<String>,
     pub state: String,
+    /// Row key of the parent row in the walk (`None` for roots) — ← jumps here.
+    pub parent: Option<String>,
+    /// The walk put child rows under this one (foldable / zoomable).
+    pub has_kids: bool,
+    /// Present when the subtree is folded shut under this row.
+    pub fold: Option<FoldChip>,
+}
+
+/// The chip a folded row carries: how much is hidden, and any attention
+/// states inside — folding compresses history, it must not hide an alarm.
+#[derive(Clone)]
+pub struct FoldChip {
+    pub hidden: usize,
+    /// Strongest attention color inside the fold (compact rows tint the
+    /// ▸ marker with it).
+    pub hot: Option<u8>,
+    pub segs: Vec<Seg>,
 }
 
 impl Row {
@@ -60,6 +77,9 @@ impl Row {
             lit: false,
             tag: None,
             state: state.into(),
+            parent: None,
+            has_kids: false,
+            fold: None,
         }
     }
 }
@@ -81,6 +101,25 @@ pub struct Scene {
     /// future-node keys resolve to the task, so panels that think in tasks
     /// (the attention queue) highlight correctly (gpt F18).
     pub selected_task: Option<String>,
+    /// Present while the trace is re-rooted at one branch.
+    pub zoom: Option<ZoomNote>,
+}
+
+/// Zoom state the renderer surfaces: which row the trace is re-rooted at,
+/// and how many attention items live OUTSIDE the zoom — a zoom narrows the
+/// view, it must not hide an alarm silently.
+pub struct ZoomNote {
+    pub root: String,
+    pub outside: usize,
+}
+
+/// Interactive view state that shapes the scene: zoom re-roots the walk at
+/// one row, folds collapse subtrees into their top row. Snapshots and
+/// tests pass `&ViewOpts::default()`.
+#[derive(Default)]
+pub struct ViewOpts<'a> {
+    pub zoom: Option<&'a str>,
+    pub folded: Option<&'a std::collections::HashSet<String>>,
 }
 
 /// Minutes since epoch from an ISO-8601 timestamp. Real validation, not a
@@ -363,6 +402,171 @@ impl<'a> Ix<'a> {
 
 // ── scene build ─────────────────────────────────────────────────────
 
+/// The node forest the walk draws: every attempt (or task stub), its
+/// children, and the roots — shared by `build`, `settled_roots`, and
+/// nothing else, so the two can never disagree about tree shape.
+struct Forest {
+    all: Vec<NodeRef>,
+    children: Vec<Vec<NodeRef>>,
+    index: std::collections::HashMap<NodeRef, usize>,
+    roots: Vec<NodeRef>,
+}
+
+fn forest(ix: &Ix) -> Forest {
+    let mut all: Vec<NodeRef> = Vec::new();
+    for (ti, t) in ix.tasks.iter().enumerate() {
+        if t.attempts.is_empty() {
+            all.push(NodeRef::T(ti));
+        } else {
+            for &ai in &ix.order[ti] {
+                all.push(NodeRef::A(ti, ai));
+            }
+        }
+    }
+    let mut children: Vec<Vec<NodeRef>> = vec![Vec::new(); all.len()];
+    let index: std::collections::HashMap<NodeRef, usize> =
+        all.iter().enumerate().map(|(i, &n)| (n, i)).collect();
+    let mut roots: Vec<NodeRef> = Vec::new();
+    for &n in &all {
+        match ix.parent(n) {
+            Some(p) if p != n => children[index[&p]].push(n),
+            _ => roots.push(n),
+        }
+    }
+    for kids in &mut children {
+        kids.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
+    }
+    roots.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
+    Forest { all, children, index, roots }
+}
+
+/// The state a row DISPLAYS for attention purposes: the attempt's state,
+/// with the task's blocked/review outranking a live working/queued — the
+/// same projection `node_row` draws. Fold summaries and the settled check
+/// ride this, so a fold can never hide what the trace would have shown.
+fn effective_state(ix: &Ix, n: NodeRef) -> String {
+    match ix.attempt(n) {
+        Some(a) => {
+            let st = a.state.as_deref().unwrap_or("queued");
+            if matches!(st, "working" | "queued") {
+                if let Some(ts @ ("blocked" | "review")) = ix.task_of(n).state.as_deref() {
+                    return ts.to_string();
+                }
+            }
+            st.to_string()
+        }
+        None => ix.task_of(n).state.as_deref().unwrap_or("queued").to_string(),
+    }
+}
+
+/// alarms: [blocked, lost, review, settled_unverified, working]
+fn fold_chip(hidden: usize, alarms: &[usize; 5]) -> FoldChip {
+    let mut segs = vec![
+        Seg("▸ ".into(), Style::bold(style::ACCENT)),
+        Seg(format!("{hidden} hidden"), Style::dim(style::MUTED)),
+    ];
+    let mut hot = None;
+    let cats = [
+        ("blocked", alarms[0]),
+        ("lost", alarms[1]),
+        ("review", alarms[2]),
+        ("settled_unverified", alarms[3]),
+        ("working", alarms[4]),
+    ];
+    for (state, count) in cats {
+        if count == 0 {
+            continue;
+        }
+        let col = style::state_color(state);
+        let label = if state == "settled_unverified" { "unverified" } else { state };
+        // working is activity, not an alarm — it shows, but dim
+        let live = state != "working";
+        if live && hot.is_none() {
+            hot = Some(col);
+        }
+        segs.push(Seg(
+            format!(" · {} {count} {label}", style::state_glyph(state)),
+            if live { Style::bold(col) } else { Style::dim(col) },
+        ));
+    }
+    FoldChip { hidden, hot, segs }
+}
+
+/// Row keys of the topmost all-settled subtrees — branches where the node
+/// and every descendant is done/failed/rejected: history, nothing live or
+/// waiting. These are what `z` folds; attention states never fold away.
+pub fn settled_roots(doc: &Doc) -> Vec<String> {
+    fn settled(ix: &Ix, f: &Forest, n: NodeRef) -> bool {
+        matches!(effective_state(ix, n).as_str(), "done" | "failed" | "rejected")
+            && f.children[f.index[&n]].iter().all(|&k| settled(ix, f, k))
+    }
+    fn collect(ix: &Ix, f: &Forest, n: NodeRef, out: &mut Vec<String>) {
+        if settled(ix, f, n) {
+            // a settled leaf has nothing to fold — only branches count
+            if !f.children[f.index[&n]].is_empty() {
+                out.push(ix.key_of(n));
+            }
+        } else {
+            for &k in &f.children[f.index[&n]] {
+                collect(ix, f, k, out);
+            }
+        }
+    }
+    let ix = Ix::new(doc);
+    let f = forest(&ix);
+    let mut out = Vec::new();
+    for &r in &f.roots {
+        collect(&ix, &f, r, &mut out);
+    }
+    out
+}
+
+/// Row keys of `key`'s ancestors, nearest first — the fold path that must
+/// open for the row to be visible. Cycle-guarded against malformed docs.
+pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
+    let ix = Ix::new(doc);
+    let mut cur = ix
+        .attempt_by_id
+        .get(key)
+        .map(|&(ti, ai)| NodeRef::A(ti, ai))
+        .or_else(|| {
+            ix.task_by_id
+                .get(key)
+                .map(|&ti| ix.latest_attempt(ti).unwrap_or(NodeRef::T(ti)))
+        });
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    while let Some(n) = cur {
+        if !seen.insert(n) || out.len() > 64 {
+            break;
+        }
+        match ix.parent(n) {
+            Some(p) if p != n => {
+                out.push(ix.key_of(p));
+                cur = Some(p);
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Does this row key still name a task or attempt in the document?
+/// Zoom stacks and fold sets are pruned with this across reloads.
+pub fn key_exists(doc: &Doc, key: &str) -> bool {
+    let ix = Ix::new(doc);
+    ix.attempt_by_id.contains_key(key) || ix.task_by_id.contains_key(key)
+}
+
+/// Does a row answer this search? Matched fields: row key, display name,
+/// title, agent, and owning task id.
+pub fn row_matches(r: &Row, q: &str) -> bool {
+    let q = q.to_lowercase();
+    [&r.key, &r.name, &r.title, &r.agent, &r.task_id]
+        .into_iter()
+        .any(|s| s.to_lowercase().contains(&q))
+}
+
 /// `flow_chip` is the precomputed `stats::header_chip` for this doc —
 /// computed once per (re)load by the caller, not per frame: the full
 /// flow DFS has no business running 3×/s for a number that only changes
@@ -372,6 +576,7 @@ pub fn build(
     selected: Option<&str>,
     hints: Option<&Hints>,
     flow_chip: Option<&str>,
+    opts: &ViewOpts,
 ) -> Scene {
     let ix = Ix::new(doc);
     let tasks = ix.tasks;
@@ -426,30 +631,21 @@ pub fn build(
     });
 
     // nodes + children
-    let mut all: Vec<NodeRef> = Vec::new();
-    for (ti, t) in tasks.iter().enumerate() {
-        if t.attempts.is_empty() {
-            all.push(NodeRef::T(ti));
-        } else {
-            for &ai in &ix.order[ti] {
-                all.push(NodeRef::A(ti, ai));
-            }
-        }
-    }
-    let mut children: Vec<Vec<NodeRef>> = vec![Vec::new(); all.len()];
-    let index: std::collections::HashMap<NodeRef, usize> =
-        all.iter().enumerate().map(|(i, &n)| (n, i)).collect();
-    let mut roots: Vec<NodeRef> = Vec::new();
-    for &n in &all {
-        match ix.parent(n) {
-            Some(p) if p != n => children[index[&p]].push(n),
-            _ => roots.push(n),
-        }
-    }
-    for kids in &mut children {
-        kids.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
-    }
-    roots.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
+    let Forest { all, children, index, roots } = forest(&ix);
+
+    // zoom: re-root the walk at one row; an unknown key draws the full run
+    let zoom_node = opts.zoom.and_then(|z| all.iter().copied().find(|&n| ix.key_of(n) == z));
+    let walk_roots: Vec<NodeRef> = match zoom_node {
+        Some(n) => vec![n],
+        None => roots,
+    };
+
+    let no_folds = std::collections::HashSet::new();
+    let folded = opts.folded.unwrap_or(&no_folds);
+    // every node the walk accounted for — emitted as a row OR hidden
+    // inside a fold — so the unreachable-node fallback below cannot
+    // resurrect folded work as flat rows
+    let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let mut rows: Vec<Row> = Vec::new();
     struct Walker<'a, 'b> {
@@ -460,12 +656,31 @@ pub fn build(
         selected_task: Option<&'b str>,
         now_min: Option<i64>,
         hints: Option<&'b Hints>,
+        folded: &'b std::collections::HashSet<String>,
+        covered: &'b mut std::collections::HashSet<String>,
     }
     impl<'a, 'b> Walker<'a, 'b> {
         fn pos(&self, n: NodeRef) -> usize {
             self.index[&n]
         }
-        fn walk(&mut self, n: NodeRef, prefix: &str, is_root: bool, is_last: bool) {
+        /// Mark a folded-away subtree as covered while tallying what the
+        /// fold hides — count and attention states, for the ▸ chip.
+        fn consume(&mut self, n: NodeRef, hidden: &mut usize, alarms: &mut [usize; 5]) {
+            for k in self.children[self.pos(n)].clone() {
+                self.covered.insert(self.ix.key_of(k));
+                *hidden += 1;
+                match effective_state(self.ix, k).as_str() {
+                    "blocked" => alarms[0] += 1,
+                    "lost" => alarms[1] += 1,
+                    "review" => alarms[2] += 1,
+                    "settled_unverified" => alarms[3] += 1,
+                    "working" => alarms[4] += 1,
+                    _ => {}
+                }
+                self.consume(k, hidden, alarms);
+            }
+        }
+        fn walk(&mut self, n: NodeRef, prefix: &str, is_root: bool, is_last: bool, parent: Option<&str>) {
             let rail = if is_root {
                 " ".to_string()
             } else {
@@ -478,7 +693,10 @@ pub fn build(
                 .and_then(|c| c.cause_type.as_deref())
                 .map(|t| t == "sent_back" || t == "gate_failed")
                 .unwrap_or(false);
+            let key = self.ix.key_of(n);
+            self.covered.insert(key.clone());
             self.rows.push(node_row(self.ix, n, &rail, reentry, self.now_min, self.hints));
+            self.rows.last_mut().expect("row just pushed").parent = parent.map(str::to_string);
 
             let child_prefix = if is_root {
                 prefix.to_string()
@@ -497,6 +715,18 @@ pub fn build(
             let is_gate = task.kind.as_deref() == Some("gate");
             let blocked = task.state.as_deref() == Some("blocked");
             let kids = self.children[self.pos(n)].clone();
+            self.rows.last_mut().expect("row just pushed").has_kids = !kids.is_empty();
+            // a folded branch collapses into its top row: children and
+            // futures stay hidden, the ▸ chip says how much and keeps any
+            // alarm visible — a fold must never hide a blocked row silently
+            if !kids.is_empty() && self.folded.contains(&key) {
+                let mut hidden = 0usize;
+                let mut alarms = [0usize; 5];
+                self.consume(n, &mut hidden, &mut alarms);
+                self.rows.last_mut().expect("row just pushed").fold =
+                    Some(fold_chip(hidden, &alarms));
+                return;
+            }
             let mut dotted: Vec<Row> = Vec::new();
             if let Some(a) = self.ix.attempt(n) {
                 let earned = a.state.as_deref() == Some("working") || blocked;
@@ -518,7 +748,7 @@ pub fn build(
 
             for (j, &k) in kids.iter().enumerate() {
                 let last = j == kids.len() - 1 && dotted.is_empty();
-                self.walk(k, &child_prefix, false, last);
+                self.walk(k, &child_prefix, false, last, Some(&key));
             }
             self.rows.extend(dotted);
         }
@@ -537,19 +767,20 @@ pub fn build(
             selected_task: selected_task.as_deref(),
             now_min,
             hints,
+            folded,
+            covered: &mut covered,
         };
-        for (i, &r) in roots.iter().enumerate() {
-            w.walk(r, " ", true, i == roots.len() - 1);
+        for (i, &r) in walk_roots.iter().enumerate() {
+            w.walk(r, " ", true, i == walk_roots.len() - 1, None);
         }
     }
     // Malformed graphs (parent cycles) leave nodes unreachable from any
     // root. They still exist: emit them flat so the contract-error banner
     // has visible rows to explain, instead of silently dropping work.
-    {
-        let emitted: std::collections::HashSet<String> =
-            rows.iter().map(|r| r.key.clone()).collect();
+    // (Skipped under zoom: out-of-subtree nodes are excluded on purpose.)
+    if zoom_node.is_none() {
         for &n in &all {
-            if !emitted.contains(&ix.key_of(n)) {
+            if !covered.contains(&ix.key_of(n)) {
                 rows.push(node_row(&ix, n, " ", false, now_min, hints));
             }
         }
@@ -647,7 +878,29 @@ pub fn build(
         .collect();
     queue.sort_by_key(|q| (rank(&q.state), -q.minutes));
 
-    Scene { rows, queue, run_title, run_meta, selected_task }
+    // zoom narrows the queue to the subtree — but attention outside the
+    // zoom is counted, never dropped silently
+    let zoom = zoom_node.map(|zn| {
+        let mut keep = std::collections::HashSet::new();
+        let mut stack = vec![zn];
+        while let Some(n) = stack.pop() {
+            if let Some(id) = ix.task_of(n).id.clone() {
+                keep.insert(id);
+            }
+            stack.extend(children[index[&n]].iter().copied());
+        }
+        let outside = queue
+            .iter()
+            .filter(|q| !keep.contains(&q.task_id))
+            .filter(|q| {
+                matches!(q.state.as_str(), "blocked" | "lost" | "review" | "settled_unverified")
+            })
+            .count();
+        queue.retain(|q| keep.contains(&q.task_id));
+        ZoomNote { root: ix.key_of(zn), outside }
+    });
+
+    Scene { rows, queue, run_title, run_meta, selected_task, zoom }
 }
 
 // ── row constructors ────────────────────────────────────────────────
@@ -1005,4 +1258,110 @@ fn fanin_rows(ix: &Ix, task: &Task, prefix: &str) -> Vec<Row> {
         out.push(row);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A·a1 ── B·a1 ── D (stub, done)
+    ///      ╰─ C·a1 (working attempt, task blocked)
+    fn mini() -> Doc {
+        serde_json::from_str(
+            r#"{
+              "dagr": 1,
+              "run": {"id": "r", "title": "mini"},
+              "generated_at": "2026-08-16T12:00:00Z",
+              "tasks": [
+                {"id": "A", "title": "impl: a", "state": "done", "deps": [],
+                 "attempts": [{"id": "A·a1", "n": 1, "state": "done",
+                               "started_at": "2026-08-16T10:00:00Z", "ended_at": "2026-08-16T10:10:00Z"}]},
+                {"id": "B", "title": "impl: b", "state": "done", "deps": ["A"],
+                 "attempts": [{"id": "B·a1", "n": 1, "state": "done",
+                               "started_at": "2026-08-16T10:20:00Z", "ended_at": "2026-08-16T10:30:00Z"}]},
+                {"id": "C", "title": "impl: c", "state": "blocked", "unblock": "emre", "deps": ["A"],
+                 "attempts": [{"id": "C·a1", "n": 1, "state": "working",
+                               "started_at": "2026-08-16T10:25:00Z"}]},
+                {"id": "D", "title": "impl: d", "state": "done", "deps": ["B"], "attempts": []}
+              ]
+            }"#,
+        )
+        .expect("mini doc parses")
+    }
+
+    fn keys(scene: &Scene) -> Vec<&str> {
+        scene.rows.iter().map(|r| r.key.as_str()).collect()
+    }
+
+    #[test]
+    fn the_full_walk_emits_every_node_with_parents() {
+        let doc = mini();
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["A·a1", "B·a1", "D", "C·a1"]);
+        let by_key = |k: &str| scene.rows.iter().find(|r| r.key == k).unwrap();
+        assert_eq!(by_key("A·a1").parent, None);
+        assert_eq!(by_key("B·a1").parent.as_deref(), Some("A·a1"));
+        assert_eq!(by_key("D").parent.as_deref(), Some("B·a1"));
+        assert!(by_key("A·a1").has_kids && by_key("B·a1").has_kids);
+        assert!(!by_key("D").has_kids);
+    }
+
+    #[test]
+    fn a_fold_hides_the_subtree_but_not_the_alarm() {
+        let doc = mini();
+        let folded: std::collections::HashSet<String> = ["A·a1".to_string()].into();
+        let scene = build(&doc, None, None, None, &ViewOpts { zoom: None, folded: Some(&folded) });
+        assert_eq!(keys(&scene), ["A·a1"], "fallback must not resurrect folded rows");
+        let chip = scene.rows[0].fold.as_ref().expect("fold chip");
+        assert_eq!(chip.hidden, 3);
+        // C's working attempt displays as BLOCKED (task state outranks) —
+        // the chip must carry that, in blocked ink
+        assert_eq!(chip.hot, Some(crate::style::BLOCKED));
+        let text: String = chip.segs.iter().map(|Seg(s, _)| s.as_str()).collect();
+        assert!(text.contains("3 hidden") && text.contains("1 blocked"), "{text}");
+    }
+
+    #[test]
+    fn zoom_reroots_and_counts_attention_left_outside() {
+        let doc = mini();
+        let scene = build(&doc, None, None, None, &ViewOpts { zoom: Some("B·a1"), folded: None });
+        assert_eq!(keys(&scene), ["B·a1", "D"]);
+        let z = scene.zoom.as_ref().expect("zoom note");
+        assert_eq!(z.root, "B·a1");
+        assert_eq!(z.outside, 1, "blocked C is outside the zoom and must be counted");
+        assert!(scene.queue.is_empty(), "C leaves the visible queue under this zoom");
+    }
+
+    #[test]
+    fn unknown_zoom_key_draws_the_full_run() {
+        let doc = mini();
+        let scene = build(&doc, None, None, None, &ViewOpts { zoom: Some("nope"), folded: None });
+        assert_eq!(scene.rows.len(), 4);
+        assert!(scene.zoom.is_none());
+    }
+
+    #[test]
+    fn settled_roots_find_the_topmost_finished_branch_only() {
+        let doc = mini();
+        // A's subtree holds blocked C → not settled; B·a1's subtree (D) is
+        // all done → the one foldable settled branch. C is live, D a leaf.
+        assert_eq!(settled_roots(&doc), ["B·a1"]);
+    }
+
+    #[test]
+    fn ancestors_walk_to_the_root_nearest_first() {
+        let doc = mini();
+        assert_eq!(ancestors(&doc, "D"), ["B·a1", "A·a1"]);
+        assert_eq!(ancestors(&doc, "A·a1"), Vec::<String>::new());
+        assert_eq!(ancestors(&doc, "nope"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn search_matches_ids_titles_and_agents() {
+        let doc = mini();
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let c = scene.rows.iter().find(|r| r.key == "C·a1").unwrap();
+        assert!(row_matches(c, "c·a1") && row_matches(c, "impl: c") && row_matches(c, "C"));
+        assert!(!row_matches(c, "impl: d"));
+    }
 }

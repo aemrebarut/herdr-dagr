@@ -8,6 +8,7 @@ mod check;
 mod contract;
 mod herdr;
 mod model;
+mod picker;
 mod render;
 mod select;
 mod stats;

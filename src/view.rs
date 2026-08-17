@@ -4,7 +4,7 @@
 //! reference. The renderer never crashes on bad input: contract errors
 //! become a banner, and the last good scene stays up.
 
-use crate::{action, check, contract::Doc, herdr, model, render, select, stats};
+use crate::{action, check, contract::Doc, herdr, model, picker, render, select, stats, style};
 use crossterm::{
     cursor, event, execute, queue,
     terminal::{self, ClearType},
@@ -100,7 +100,8 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
     // underflowed layout math (a resize can momentarily report tiny sizes).
     let w = args.width.unwrap_or(120).max(20);
     let selected = args.select.as_deref();
-    let scene = model::build(&loaded.doc, selected, None, loaded.chip.as_deref());
+    let scene =
+        model::build(&loaded.doc, selected, None, loaded.chip.as_deref(), &model::ViewOpts::default());
     let frame = render::compose(
         &render::FrameInput {
             doc: &loaded.doc,
@@ -130,6 +131,10 @@ enum Mode {
     Normal,
     Input { pending: action::Pending, buf: String },
     Confirm { pending: action::Pending, since: std::time::Instant },
+    /// `f` — the run-file picker (its own frame, like help).
+    Picker(picker::State),
+    /// `/` — incremental row search; the query lives on the bottom line.
+    Search { buf: String },
 }
 
 /// How long the confirm gate must have been on screen before `y`
@@ -211,6 +216,8 @@ fn modal_step(
             Char('c') if ctrl => ModalStep::Cancel("cancelled"),
             _ => ModalStep::Stay(Mode::Confirm { pending, since }),
         },
+        // picker and search keys are handled by the event loop directly
+        m => ModalStep::Stay(m),
     }
 }
 
@@ -244,11 +251,28 @@ struct App {
     /// Bytes of the last painted screen. An identical frame is skipped
     /// rather than repainted.
     painted: Vec<u8>,
+    /// Zoom stack: the last entry is the row key the trace is re-rooted at.
+    zoom: Vec<String>,
+    /// Row keys folded shut (← on a branch, `z` for settled ones).
+    folded: std::collections::HashSet<String>,
+    /// Last committed `/` query (n/N cycle it) and its match count.
+    search: Option<String>,
+    search_matches: usize,
+    /// Previous plain click, for double-click zoom: when, and which
+    /// frame line it landed on.
+    last_click: Option<(std::time::Instant, usize)>,
 }
 
 impl App {
     fn hints(&self) -> Option<herdr::Hints> {
         self.herdr.as_ref().map(|l| l.hints())
+    }
+
+    fn view_opts(&self) -> model::ViewOpts<'_> {
+        model::ViewOpts {
+            zoom: self.zoom.last().map(String::as_str),
+            folded: Some(&self.folded),
+        }
     }
 
     fn scene(&self) -> model::Scene {
@@ -258,6 +282,7 @@ impl App {
             self.selected.as_deref(),
             h.as_ref(),
             self.loaded.chip.as_deref(),
+            &self.view_opts(),
         )
     }
 
@@ -312,17 +337,324 @@ impl App {
             return;
         }
         self.queue_pos %= scene.queue.len();
-        let item = &scene.queue[self.queue_pos];
-        // select the task's latest row
-        let key = scene
+        let tid = scene.queue[self.queue_pos].task_id.clone();
+        self.jump_to_task(&tid);
+        self.queue_pos += 1;
+    }
+
+    /// Select a task's latest real row, unfolding (and if needed unzooming)
+    /// whatever hides it — a jump means "take me there", never a silent miss.
+    fn jump_to_task(&mut self, tid: &str) {
+        let key = self
+            .loaded
+            .doc
+            .tasks
+            .as_deref()
+            .and_then(|ts| ts.iter().find(|t| t.id.as_deref() == Some(tid)))
+            .and_then(|t| {
+                t.attempts
+                    .iter()
+                    .max_by_key(|a| a.n.unwrap_or(0))
+                    .and_then(|a| a.id.clone())
+                    .or_else(|| t.id.clone())
+            })
+            .unwrap_or_else(|| tid.to_string());
+        self.reveal(&key);
+        self.selected = Some(key);
+    }
+
+    /// Open the way to a row: unfold every folded ancestor, and drop the
+    /// zoom entirely if the row lives outside it.
+    fn reveal(&mut self, key: &str) {
+        let anc = model::ancestors(&self.loaded.doc, key);
+        if let Some(root) = self.zoom.last() {
+            if root != key && !anc.iter().any(|a| a == root) {
+                self.zoom.clear();
+            }
+        }
+        for a in &anc {
+            self.folded.remove(a);
+        }
+    }
+
+    fn row_state(&self, key: &str) -> Option<(bool, bool, Option<String>)> {
+        self.scene()
             .rows
             .iter()
-            .rev()
-            .find(|r| r.task_id == item.task_id && !r.dotted)
+            .find(|r| r.key == key)
+            .map(|r| (r.fold.is_some(), r.has_kids, r.parent.clone()))
+    }
+
+    /// → on a row: a folded row opens; an open branch zooms; a leaf stays.
+    fn open_or_zoom(&mut self, key: String) {
+        let Some((folded, has_kids, _)) = self.row_state(&key) else { return };
+        if folded {
+            self.folded.remove(&key);
+        } else if has_kids {
+            if self.zoom.last() != Some(&key) {
+                self.zoom.push(key);
+                self.flash = Some(("zoomed — esc/← backs out".into(), 10));
+            }
+        } else {
+            self.flash = Some(("leaf row — nothing to zoom into".into(), 8));
+        }
+    }
+
+    /// ← on a row: the zoom root un-zooms; an open branch folds; a folded
+    /// or leaf row jumps to its parent.
+    fn fold_or_up(&mut self) {
+        let Some(key) = self.selected.clone() else { return };
+        if self.zoom.last() == Some(&key) {
+            self.zoom.pop();
+            self.flash = Some(("zoomed out".into(), 6));
+            return;
+        }
+        let Some((folded, has_kids, parent)) = self.row_state(&key) else { return };
+        if !folded && has_kids {
+            self.folded.insert(key);
+            return;
+        }
+        if let Some(p) = parent {
+            self.selected = Some(p);
+        }
+    }
+
+    /// `z`: fold every fully-settled branch (or unfold them all again).
+    fn toggle_settled(&mut self) {
+        let roots = model::settled_roots(&self.loaded.doc);
+        if roots.is_empty() {
+            self.flash = Some(("no settled branches to fold".into(), 8));
+            return;
+        }
+        if roots.iter().all(|k| self.folded.contains(k)) {
+            for k in &roots {
+                self.folded.remove(k);
+            }
+            self.flash = Some(("settled branches unfolded".into(), 8));
+        } else {
+            let n = roots.len();
+            self.folded.extend(roots);
+            self.snap_selection();
+            self.flash = Some((
+                format!("folded {n} settled branch{}", if n == 1 { "" } else { "es" }),
+                10,
+            ));
+        }
+    }
+
+    /// A fold or reload can hide the selected row: land on its nearest
+    /// visible ancestor instead of pointing at nothing.
+    fn snap_selection(&mut self) {
+        let Some(sel) = self.selected.clone() else { return };
+        let keys = self.selectable_keys();
+        if keys.iter().any(|k| *k == sel) {
+            return;
+        }
+        for anc in model::ancestors(&self.loaded.doc, &sel) {
+            if keys.iter().any(|k| *k == anc) {
+                self.selected = Some(anc);
+                return;
+            }
+        }
+        self.selected = keys.first().cloned();
+    }
+
+    /// Recompute matches for the live query; land on the first one unless
+    /// the cursor already sits on a match (incremental `/` typing).
+    fn search_apply(&mut self) {
+        let Some(q) = self.search.clone() else {
+            self.search_matches = 0;
+            return;
+        };
+        let scene = self.scene();
+        let matches: Vec<String> = scene
+            .rows
+            .iter()
+            .filter(|r| r.selectable && model::row_matches(r, &q))
             .map(|r| r.key.clone())
-            .unwrap_or_else(|| item.task_id.clone());
-        self.selected = Some(key);
-        self.queue_pos += 1;
+            .collect();
+        self.search_matches = matches.len();
+        if matches.is_empty()
+            || self.selected.as_deref().is_some_and(|s| matches.iter().any(|m| m == s))
+        {
+            return;
+        }
+        self.selected = Some(matches[0].clone());
+    }
+
+    /// n/N — cycle matches of the last `/` query, wrapping.
+    fn search_jump(&mut self, dir: i64) {
+        let Some(q) = self.search.clone() else {
+            self.flash = Some(("no search — press / first".into(), 8));
+            return;
+        };
+        let scene = self.scene();
+        let idxs: Vec<usize> = scene
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.selectable && model::row_matches(r, &q))
+            .map(|(i, _)| i)
+            .collect();
+        self.search_matches = idxs.len();
+        if idxs.is_empty() {
+            self.flash = Some((format!("no match for /{q}"), 8));
+            return;
+        }
+        let cur = self
+            .selected
+            .as_deref()
+            .and_then(|s| scene.rows.iter().position(|r| r.key == s));
+        let next = match (dir > 0, cur) {
+            (true, Some(c)) => idxs.iter().copied().find(|&i| i > c).unwrap_or(idxs[0]),
+            (true, None) => idxs[0],
+            (false, Some(c)) => {
+                idxs.iter().copied().rev().find(|&i| i < c).unwrap_or(*idxs.last().unwrap())
+            }
+            (false, None) => *idxs.last().unwrap(),
+        };
+        let nth = idxs.iter().position(|&i| i == next).unwrap_or(0) + 1;
+        self.selected = Some(scene.rows[next].key.clone());
+        self.flash = Some((format!("match {nth}/{}", idxs.len()), 8));
+    }
+
+    /// `f` — the run-file picker, rooted at the current file's directory.
+    fn enter_picker(&mut self) {
+        let base = std::path::Path::new(&self.path)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let base = base.canonicalize().unwrap_or(base);
+        self.mode = Mode::Picker(picker::State::open(base));
+    }
+
+    fn poll_picker(&mut self) {
+        if let Mode::Picker(st) = &mut self.mode {
+            st.poll();
+        }
+    }
+
+    /// Point the pane at another run file (the `f` picker chose it).
+    fn open_file(&mut self, path: std::path::PathBuf) {
+        picker::mru_add(&path);
+        self.path = path.to_string_lossy().to_string();
+        self.zoom.clear();
+        self.folded.clear();
+        self.search = None;
+        self.search_matches = 0;
+        self.selected = None;
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.path.clone());
+        self.flash = Some((format!("watching {name}"), 10));
+        self.reload(); // a load error overwrites the flash with the reason
+        self.auto_select();
+    }
+
+    /// Start on the most urgent thing, like a human would.
+    fn auto_select(&mut self) {
+        if self.selected.is_some() {
+            return;
+        }
+        let scene = self.scene();
+        self.selected = scene
+            .queue
+            .first()
+            .map(|q| q.task_id.clone())
+            .and_then(|tid| {
+                scene
+                    .rows
+                    .iter()
+                    .rev()
+                    .find(|r| r.task_id == tid && !r.dotted)
+                    .map(|r| r.key.clone())
+            })
+            .or_else(|| scene.rows.iter().find(|r| r.selectable).map(|r| r.key.clone()));
+    }
+
+    /// One key in the `f` picker: typing filters, arrows move.
+    fn picker_key(&mut self, mut st: picker::State, k: event::KeyEvent) {
+        use event::KeyCode::*;
+        let ctrl = k.modifiers.contains(event::KeyModifiers::CONTROL);
+        match k.code {
+            Esc => {}
+            Char('c') if ctrl => {}
+            Enter => match st.current().map(|it| it.path.clone()) {
+                Some(p) => self.open_file(p),
+                None => self.mode = Mode::Picker(st),
+            },
+            Up => {
+                st.step(-1);
+                self.mode = Mode::Picker(st);
+            }
+            Down => {
+                st.step(1);
+                self.mode = Mode::Picker(st);
+            }
+            Char('p' | 'k') if ctrl => {
+                st.step(-1);
+                self.mode = Mode::Picker(st);
+            }
+            Char('n' | 'j') if ctrl => {
+                st.step(1);
+                self.mode = Mode::Picker(st);
+            }
+            Backspace => {
+                st.query.pop();
+                st.pos = 0;
+                self.mode = Mode::Picker(st);
+            }
+            Char(c) if !ctrl && !k.modifiers.contains(event::KeyModifiers::ALT) => {
+                st.query.push(c);
+                st.pos = 0;
+                self.mode = Mode::Picker(st);
+            }
+            _ => self.mode = Mode::Picker(st),
+        }
+    }
+
+    /// One key in `/` search: typing edits the query and jumps live.
+    fn search_key(&mut self, mut buf: String, k: event::KeyEvent) {
+        use event::KeyCode::*;
+        let ctrl = k.modifiers.contains(event::KeyModifiers::CONTROL);
+        match k.code {
+            Esc => {
+                self.search = None;
+                self.search_matches = 0;
+            }
+            Char('c') if ctrl => {
+                self.search = None;
+                self.search_matches = 0;
+            }
+            Enter => {
+                if buf.is_empty() {
+                    self.search = None;
+                    self.search_matches = 0;
+                } else {
+                    let n = self.search_matches;
+                    self.flash = Some((
+                        format!("{n} match{} · n/N cycles", if n == 1 { "" } else { "es" }),
+                        10,
+                    ));
+                }
+            }
+            Backspace => {
+                buf.pop();
+                self.search = (!buf.is_empty()).then(|| buf.clone());
+                self.search_apply();
+                self.mode = Mode::Search { buf };
+            }
+            Char(c) if !ctrl && !k.modifiers.contains(event::KeyModifiers::ALT) => {
+                buf.push(c);
+                self.search = Some(buf.clone());
+                self.search_apply();
+                self.mode = Mode::Search { buf };
+            }
+            _ => self.mode = Mode::Search { buf },
+        }
     }
 
     /// Left-click: replay (column, terminal row) against the hit regions
@@ -340,18 +672,12 @@ impl App {
             .map(|h| h.target.clone());
         match target {
             Some(render::HitTarget::Row(key)) => self.selected = Some(key),
-            Some(render::HitTarget::Task(tid)) => {
-                // same move as tab: the queue thinks in tasks, the cursor
-                // in rows — land on the task's latest real row
-                let key = self
-                    .scene()
-                    .rows
-                    .iter()
-                    .rev()
-                    .find(|r| r.task_id == tid && !r.dotted)
-                    .map(|r| r.key.clone())
-                    .unwrap_or(tid);
-                self.selected = Some(key);
+            // same move as tab: the queue thinks in tasks, the cursor in
+            // rows — land on the task's latest real row, unfolding to it
+            Some(render::HitTarget::Task(tid)) => self.jump_to_task(&tid),
+            // the ▸ chip only exists on a folded row: a click opens it
+            Some(render::HitTarget::Fold(key)) => {
+                self.folded.remove(&key);
             }
             None => {}
         }
@@ -520,6 +846,8 @@ impl App {
             Mode::Confirm { pending, .. } => {
                 Some(format!("run? {} — [y] run · [esc] cancel", pending.preview()))
             }
+            // the picker draws its own frame; search lives on the bottom line
+            Mode::Picker(_) | Mode::Search { .. } => None,
         }
     }
 
@@ -527,10 +855,12 @@ impl App {
         // the frame is about to be rebuilt from a new revision; a
         // highlight anchored to the old lines would frame the wrong text
         self.sel = None;
-        // an open modal points at the document it was built from;
-        // carrying the intent silently across a revision can apply it
-        // to state the human never saw
-        if !matches!(self.mode, Mode::Normal) {
+        // an open ACTION modal points at the document it was built from;
+        // carrying the intent silently across a revision can apply it to
+        // state the human never saw. The picker and search reference no
+        // document state — a producer rewriting the file every few
+        // seconds must not keep killing them.
+        if matches!(self.mode, Mode::Input { .. } | Mode::Confirm { .. }) {
             self.mode = Mode::Normal;
             self.flash = Some((
                 "run file changed — action cancelled; re-select and re-confirm".into(),
@@ -540,12 +870,11 @@ impl App {
         match load(&self.path) {
             Ok(l) => {
                 self.loaded = l;
-                // keep selection if it still exists
-                if let Some(sel) = self.selected.clone() {
-                    if !self.selectable_keys().contains(&sel) {
-                        self.selected = None;
-                    }
-                }
+                // view state that names rows survives only as long as the
+                // rows do
+                self.zoom.retain(|k| model::key_exists(&self.loaded.doc, k));
+                self.folded.retain(|k| model::key_exists(&self.loaded.doc, k));
+                self.snap_selection();
                 self.update_watch();
             }
             Err(e) => self.flash = Some((e, 20)),
@@ -557,13 +886,19 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
     // A missing or malformed file is not fatal in the pane: start on an
     // empty scene with a banner and let the mtime watch pick the file up
     // when the producer writes it (graceful degradation).
-    let loaded = load(&args.path).unwrap_or_else(|e| Loaded {
+    let loaded = load(&args.path);
+    let initial_ok = loaded.is_ok();
+    let loaded = loaded.unwrap_or_else(|e| Loaded {
         doc: empty_doc(),
         banner: Some(format!("waiting for run file — {e}")),
         generated_min: None,
         chip: None,
         action_findings: Vec::new(),
     });
+    if initial_ok {
+        // seed the `f` picker's recent list — sibling panes see it too
+        picker::mru_add(std::path::Path::new(&args.path));
+    }
     let mut app = App {
         path: args.path.clone(),
         loaded,
@@ -582,25 +917,14 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         frame: Vec::new(),
         sel: None,
         painted: Vec::new(),
+        zoom: Vec::new(),
+        folded: std::collections::HashSet::new(),
+        search: None,
+        search_matches: 0,
+        last_click: None,
     };
     app.update_watch();
-    if app.selected.is_none() {
-        // start on the most urgent thing, like a human would
-        let scene = app.scene();
-        app.selected = scene
-            .queue
-            .first()
-            .map(|q| q.task_id.clone())
-            .and_then(|tid| {
-                scene
-                    .rows
-                    .iter()
-                    .rev()
-                    .find(|r| r.task_id == tid && !r.dotted)
-                    .map(|r| r.key.clone())
-            })
-            .or_else(|| scene.rows.iter().find(|r| r.selectable).map(|r| r.key.clone()));
-    }
+    app.auto_select();
 
     let mut stdout = std::io::stdout();
     terminal::enable_raw_mode().map_err(|e| e.to_string())?;
@@ -633,6 +957,7 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
         .ok();
     loop {
         app.poll_bg();
+        app.poll_picker();
         draw(app, stdout)?;
         if event::poll(Duration::from_millis(300)).map_err(|e| e.to_string())? {
             match event::read().map_err(|e| e.to_string())? {
@@ -656,11 +981,18 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                             }
                             continue;
                         }
+                        Mode::Picker(st) => {
+                            app.picker_key(st, k);
+                            continue;
+                        }
+                        Mode::Search { buf } => {
+                            app.search_key(buf, k);
+                            continue;
+                        }
                         Mode::Normal => {}
                     }
-                    if k.code == Char('c')
-                        && k.modifiers.contains(event::KeyModifiers::CONTROL)
-                    {
+                    let ctrl = k.modifiers.contains(event::KeyModifiers::CONTROL);
+                    if k.code == Char('c') && ctrl {
                         return Ok(());
                     }
                     match k.code {
@@ -668,12 +1000,52 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         Esc => {
                             if app.help {
                                 app.help = false;
+                            } else if app.zoom.pop().is_some() {
+                                app.flash = Some(("zoomed out".into(), 6));
                             } else {
                                 return Ok(());
                             }
                         }
-                        Char('j') => app.move_sel(1),
-                        Char('k') => app.move_sel(-1),
+                        // half-page jumps outrank the action keys: ctrl-u
+                        // must page, not open the unblock prompt
+                        Char('d') if ctrl => app.move_sel((app.view_rows / 2).max(1) as i64),
+                        Char('u') if ctrl => app.move_sel(-((app.view_rows / 2).max(1) as i64)),
+                        Char('j') | Down => app.move_sel(1),
+                        Char('k') | Up => app.move_sel(-1),
+                        Char('g') => {
+                            let keys = app.selectable_keys();
+                            if let Some(f) = keys.first() {
+                                app.selected = Some(f.clone());
+                            }
+                        }
+                        Char('G') => {
+                            let keys = app.selectable_keys();
+                            if let Some(l) = keys.last() {
+                                app.selected = Some(l.clone());
+                            }
+                        }
+                        Right | Char('l') => {
+                            if let Some(key) = app.selected.clone() {
+                                app.open_or_zoom(key);
+                            }
+                        }
+                        Left | Char('h') => app.fold_or_up(),
+                        Char('z') => app.toggle_settled(),
+                        Char('f') => app.enter_picker(),
+                        Char('/') => {
+                            app.search_matches = 0;
+                            app.mode = Mode::Search { buf: String::new() };
+                        }
+                        Char('n') => app.search_jump(1),
+                        Char('N') => app.search_jump(-1),
+                        Char('y') => {
+                            if let Some(key) = app.selected.clone() {
+                                write!(stdout, "{}", select::osc52(&key))
+                                    .map_err(|e| e.to_string())?;
+                                stdout.flush().map_err(|e| e.to_string())?;
+                                app.flash = Some((format!("copied {key}"), 8));
+                            }
+                        }
                         Tab => app.cycle_queue(),
                         Enter => app.focus(),
                         Char('r') => {
@@ -736,8 +1108,29 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                                 // everything else just drops the highlight
                                 if app.help {
                                     app.help = false;
-                                } else {
+                                } else if row < app.view_rows {
+                                    // two clicks on the same line inside
+                                    // 450ms zoom the row (a folded one
+                                    // opens instead) — same as →
+                                    let line = app.view_start + row;
+                                    let now = std::time::Instant::now();
+                                    let double = app.last_click.take().is_some_and(|(t, l)| {
+                                        l == line
+                                            && now.duration_since(t)
+                                                < Duration::from_millis(450)
+                                    });
+                                    let hit_row = app
+                                        .hits
+                                        .iter()
+                                        .find(|h| h.line == line && col >= h.x0 && col < h.x1)
+                                        .map(|h| h.target.clone());
                                     app.click(col, row);
+                                    match (double, hit_row) {
+                                        (true, Some(render::HitTarget::Row(key))) => {
+                                            app.open_or_zoom(key)
+                                        }
+                                        _ => app.last_click = Some((now, line)),
+                                    }
                                 }
                                 app.sel = None;
                             } else {
@@ -809,10 +1202,16 @@ fn viewport_start(
 fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     let (w, h) = terminal::size().map_err(|e| e.to_string())?;
     let (w, h) = (w as usize, h as usize);
-    let modal = !matches!(app.mode, Mode::Normal);
+    // only the ACTION modals pin the frame tail (the confirm gate lives
+    // there); the picker draws its own frame and search follows the cursor
+    let modal = matches!(app.mode, Mode::Input { .. } | Mode::Confirm { .. });
     let (lines, sel_line, prompt_line) = if app.help {
         app.hits = Vec::new();
         (render::help_lines(), None, None)
+    } else if let Mode::Picker(st) = &app.mode {
+        app.hits = Vec::new();
+        let (lines, sel) = picker::lines(st, w);
+        (lines, sel, None)
     } else {
         let hints = app.hints();
         let scene = model::build(
@@ -820,6 +1219,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
             app.selected.as_deref(),
             hints.as_ref(),
             app.loaded.chip.as_deref(),
+            &app.view_opts(),
         );
         let frame = render::compose(
             &render::FrameInput {
@@ -876,6 +1276,35 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     for i in drawn..visible {
         queue!(buf, cursor::MoveTo(0, i as u16), terminal::Clear(ClearType::UntilNewLine))
             .map_err(|e| e.to_string())?;
+    }
+    // the bottom terminal row is never part of the frame — the live `/`
+    // query draws there, always on screen no matter where the trace is
+    if h > 0 {
+        queue!(buf, cursor::MoveTo(0, (h - 1) as u16), terminal::Clear(ClearType::UntilNewLine))
+            .map_err(|e| e.to_string())?;
+        let es = |n: usize| if n == 1 { "" } else { "es" };
+        let text = match (&app.mode, &app.search) {
+            (Mode::Search { buf: q }, _) => Some(format!(
+                "/{q}▏  {} match{} — enter keeps it · esc clears",
+                app.search_matches,
+                es(app.search_matches)
+            )),
+            (Mode::Picker(_), _) => None,
+            (_, Some(q)) => Some(format!(
+                "/{q}  n/N cycles {} match{}",
+                app.search_matches,
+                es(app.search_matches)
+            )),
+            _ => None,
+        };
+        if let Some(t) = text {
+            write!(
+                buf,
+                " {}",
+                style::paint(&style::trunc(&t, w.saturating_sub(3)), style::Style::bold(style::ACCENT))
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     // An identical frame is not worth a repaint: the event loop wakes on a
     // 300ms poll timeout whether or not anything happened, and repainting
