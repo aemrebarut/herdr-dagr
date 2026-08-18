@@ -68,6 +68,8 @@ on, or what a retry loop is about to spawn. And when an agent says
 
 - **Shows the whole run at a glance.** Every task, attempt, gate, and
   loop, one line per attempt, drawn like `git log --graph`.
+- **Keeps large programs legible.** Recursive projects provide one honest
+  visual home for each task; dependencies remain free to cross projects.
 - **Keeps history honest.** A retry is a new row with a recorded cause
   (who sent it back, why). Nothing moves backward or repaints.
 - **Separates "the agent said done" from "verified".** Every completion
@@ -76,9 +78,13 @@ on, or what a retry loop is about to spawn. And when an agent says
 - **Shows the future, marked as future.** Work a loop policy will emit
   is drawn in dotted ink, declared by the producer, never guessed by
   the renderer.
-- **Lets you act from the pane.** Unblock, answer, accept, reject:
-  each goes through a confirm gate showing the exact command, then
-  calls a CLI the producer itself declared.
+- **Makes gates read like milestones.** A local gate stays with its project;
+  a gate joining workstreams moves to their shared project or the run root,
+  with a state-bearing `N→1 ⋈` join instead of hiding under one input lane.
+- **Lets you steer from the pane.** One editable message goes to the
+  orchestrator through Herdr. Three defaults—Use judgment, Get guidance,
+  Snooze—stay flexible, and explicit authority says whether to return a
+  recommendation or decide and continue.
 
 It's terminal-native 256-color ANSI, a single Rust binary, no runtime
 interpreter.
@@ -108,22 +114,26 @@ exactly this way, by an agent onboarded with only the skill.
 
 Your orchestrator (or any agent, onboarded with the shipped
 [producer skill](skills/dagr-producer/SKILL.md)) maintains `run.json`
-against a frozen contract, [`CONTRACT.md`](CONTRACT.md). `dagr` watches
+against [`CONTRACT.md`](CONTRACT.md). `dagr` watches
 the file and draws it. It never writes run state; whoever produces the
-data owns it, and pane actions go to the producer's own CLI.
+data owns it. Operator messages are journaled next to the run, then queued
+to the orchestrator; dagr never becomes a second workflow engine.
 
 ```mermaid
 flowchart LR
-    swarm["agent swarm<br/>(orchestrator + workers)"] -->|"writes run state<br/>(contract v1)"| run[("run.json")]
+    swarm["agent swarm<br/>(orchestrator + workers)"] -->|"writes run state<br/>(contract v2)"| run[("run.json")]
     run -->|"watches"| view["dagr view<br/>(herdr pane)"]
     run --> check["dagr check · dagr stats<br/>(lint / flow analytics)"]
-    view -->|"u/a/o/x action<br/>+ confirm gate"| cli["producer CLI<br/>(declared in run.json)"]
-    cli -->|"idempotency-keyed write"| run
+    view -->|"contextual message<br/>+ explicit authority"| orch["orchestrator input queue<br/>(Herdr)"]
+    orch -->|"normal orchestration tools"| swarm
+    view -->|"append raw intent + receipt"| journal[("messages.jsonl")]
+    swarm -->|"correlated resolution event"| run
 ```
 
 The contract is the load-bearing part: it can express the task/attempt
-split, dependency promotion, typed loop policies, evidence tiers, and
-liveness. Anything that wants to be drawn has to say what actually
+split, recursive project scopes, dependency promotion, typed loop policies,
+evidence tiers, operator-message correlation, and liveness. Anything that
+wants to be drawn has to say what actually
 happened, in a schema that can't blur "the agent said done" into
 "done."
 
@@ -139,9 +149,11 @@ happened, in a schema that can't blur "the agent said done" into
 ```
 
 Gate rows carry state-bearing joins (`●◎●→⋈ G2`) in declared input order;
-narrow panes collapse them to counts and then `N→1`. Moving the cursor
+narrow panes collapse them to counts and then `N→1`. A gate is a project
+milestone, never a child of whichever input ran last. Moving the cursor
 reveals exact input ids and highlights the edges that justify the selected
-row.
+row. Projects recurse; a cross-project dependency stays visible as `⇠` ink
+without duplicating the task.
 
 If a terminal font renders `◎` unevenly, set `DAGR_WORKING_GLYPH=*` for the
 single-cell ASCII working mark.
@@ -166,12 +178,15 @@ Both screenshots are real renderer output, regenerable with
 
 The basics: `j/k` move (`g/G` jump to the ends, `ctrl-d/u` half-page),
 `tab` cycles the attention queue, `enter` focuses the selected
-attempt's herdr pane, `u/a/o/x` invoke the producer's declared
-unblock/answer/accept/reject actions, `r` reload, `?` help, `q` quit.
+attempt's herdr pane, `m` opens the orchestrator message composer,
+`r` reloads, `?` opens help, and `q` quits. In the composer, `tab` cycles
+Use judgment / Get guidance / Snooze, `ctrl-t` changes authority, and all
+text remains editable. An adjacent `actions.json` can replace or add a few
+prompt starters without code or onboarding.
 
-Big runs get noisy, so the tree folds and zooms. `←` folds the branch
-under the cursor down to one row with a `▸ n hidden` chip; the chip
-keeps the counts that matter (blocked, lost, review), so folding never
+Big runs get noisy, so the tree folds and zooms. `←` replaces the branch
+under the cursor with one `▸ N items` aggregate row; it keeps blocked,
+lost, review, unverified, working, queued, failed, and done counts, so folding never
 buries an alarm. `→` unfolds, and on an open branch it zooms: the
 subtree takes over the pane with a breadcrumb up top, and anything
 outside that still needs eyes shows as a `+n need eyes outside`
@@ -188,9 +203,10 @@ copies the selected row id to your clipboard.
 The mouse works too: click a trace row or a queue item to select it,
 click a `▸` chip to unfold it, double-click a row to zoom into it,
 scroll to move the cursor, and drag across anything to select text,
-which lands on your clipboard when you let go (same as herdr, including
-the argv inside a confirm gate). Actions stay keyboard-only on purpose;
-a stray click can't confirm anything.
+which lands on your clipboard when you let go. The message action in the
+focus card is clickable; Enter remains the deliberate submission step.
+Legacy v1 `u/a/o/x` producer-CLI actions remain available behind their exact
+argv confirmation gate when a run explicitly declares them.
 
 ## Install
 
@@ -209,7 +225,8 @@ of silently downloading older code.
 Windows support follows Herdr's current preview boundary. Use the
 `open-dagr-windows` action (or the side-specific `-down-windows`,
 `-up-windows`, `-left-windows`, and `-right-windows` ids). Rendering,
-navigation, folding, search, and producer actions are supported. Herdr's
+navigation, folding, search, and orchestrator messages use the Windows
+binary and Herdr CLI transport. Herdr's
 live pane-liveness overlay and Enter-to-focus link currently use Unix sockets,
 so those two conveniences are unavailable on Windows until Herdr exposes an
 equivalent named-pipe link.
@@ -252,8 +269,8 @@ Cargo is required only when building from source.
 
 ## Repo layout
 
-- [`CONTRACT.md`](CONTRACT.md): the run-state contract, frozen v1,
-  plus the §9 confirm-gated actions extension.
+- [`CONTRACT.md`](CONTRACT.md): contract v2 (v1 remains readable), including
+  recursive projects, scope-correct gates, and correlated operator messages.
 - [`src/`](src/): the `dagr` binary (Rust; serde + crossterm +
   unicode-width). `dagr check` lints a run file against the contract
   (`--json` for machine output, `--strict` to fail on warnings);
@@ -280,18 +297,13 @@ Cargo is required only when building from source.
 
 ## Status
 
-**v0.1.5.** Contract frozen at v1. The pane renders the full grammar at
-any width without crashing and stays readable down to about 34 columns.
-The producer skill onboards a fresh agent to a run file that is
-strict-clean on its first write and matches the ground truth it models;
-the selfrun demo ships the receipts, because a clean-but-wrong document
-is this project's core failure class. The action loop drives a real
-send-back and new attempt entirely from the pane. Every milestone was
-independently dual-reviewed by two model families, all findings
-addressed. The selfrun demo is an honest mid-flight snapshot: its
-release-milestone task records the final review round as planned
-futures, since the file predates the cut it models (see
-[`demos/selfrun/README.md`](demos/selfrun/README.md)).
+**v0.2.0.** Contract v2 adds recursive project scopes, scope-level gate
+milestones, truthful cross-project edges, aggregate folds, and durable
+contextual messages to the orchestrator. Existing v1 runs remain readable.
+The release includes checksum-verified standalone binaries for macOS
+(Apple or Intel), Linux (x86-64 or ARM64), and Windows x86-64, with Cargo
+needed only for source-build fallback. Contract, model, renderer,
+interaction, installer, and width-regression tests cover the shipped paths.
 
 ## License
 

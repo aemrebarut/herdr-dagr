@@ -60,6 +60,77 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
     }
 }
 
+fn project_lca<'a>(
+    a: Option<&'a str>,
+    b: Option<&'a str>,
+    parents: &HashMap<&'a str, Option<&'a str>>,
+) -> Option<&'a str> {
+    let (Some(a), Some(b)) = (a, b) else { return None };
+    let mut ancestors = HashSet::new();
+    let mut cur = Some(a);
+    while let Some(id) = cur {
+        if !ancestors.insert(id) {
+            break;
+        }
+        cur = parents.get(id).copied().flatten();
+    }
+    let mut seen = HashSet::new();
+    let mut cur = Some(b);
+    while let Some(id) = cur {
+        if !seen.insert(id) {
+            break;
+        }
+        if ancestors.contains(id) {
+            return Some(id);
+        }
+        cur = parents.get(id).copied().flatten();
+    }
+    None
+}
+
+fn task_project<'a>(
+    id: &'a str,
+    tasks: &HashMap<&'a str, &'a Task>,
+    parents: &HashMap<&'a str, Option<&'a str>>,
+    resolving: &mut HashSet<&'a str>,
+) -> Option<&'a str> {
+    let task = tasks.get(id)?;
+    if let Some(project) = task.project.as_deref() {
+        return Some(project);
+    }
+    if task.kind.as_deref() != Some("gate") || !resolving.insert(id) {
+        return None;
+    }
+    let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
+    let mut iter = inputs.iter().filter(|input| tasks.contains_key(input.as_str()));
+    let scope = iter.next().and_then(|first| {
+        iter.fold(task_project(first, tasks, parents, resolving), |common, input| {
+            project_lca(common, task_project(input, tasks, parents, resolving), parents)
+        })
+    });
+    resolving.remove(id);
+    scope
+}
+
+fn project_contains<'a>(
+    ancestor: &'a str,
+    child: Option<&'a str>,
+    parents: &HashMap<&'a str, Option<&'a str>>,
+) -> bool {
+    let mut cur = child;
+    let mut seen = HashSet::new();
+    while let Some(id) = cur {
+        if id == ancestor {
+            return true;
+        }
+        if !seen.insert(id) {
+            break;
+        }
+        cur = parents.get(id).copied().flatten();
+    }
+    false
+}
+
 pub fn check(doc: &Doc) -> Report {
     let mut f: Vec<Finding> = Vec::new();
     macro_rules! err {
@@ -85,8 +156,8 @@ pub fn check(doc: &Doc) -> Report {
     // ── document head ────────────────────────────────────────────────
     match doc.dagr {
         None => err!("E100", "dagr", "missing contract version field \"dagr\" (expected {})", CONTRACT_VERSION),
-        Some(v) if v != CONTRACT_VERSION => {
-            err!("E100", "dagr", "unsupported contract version {} (this dagr speaks {})", v, CONTRACT_VERSION)
+        Some(v) if !CONTRACT_VERSIONS.contains(&v) => {
+            err!("E100", "dagr", "unsupported contract version {} (this dagr speaks {})", v, CONTRACT_VERSIONS.iter().map(u64::to_string).collect::<Vec<_>>().join("|"))
         }
         _ => {}
     }
@@ -97,6 +168,13 @@ pub fn check(doc: &Doc) -> Report {
                 err!("E101", "run.id", "run.id is required");
             }
             ts!(&r.started_at, "run.started_at");
+            if let Some(loc) = &r.orchestrator {
+                if loc.pane.as_deref().unwrap_or("").is_empty()
+                    && loc.agent.as_deref().unwrap_or("").is_empty()
+                {
+                    err!("E103", "run.orchestrator", "orchestrator locator names neither pane nor agent");
+                }
+            }
         }
     }
     if doc.generated_at.is_none() {
@@ -112,8 +190,45 @@ pub fn check(doc: &Doc) -> Report {
         Some(t) => t,
     };
 
+    // ── recursive project scopes (v2) ───────────────────────────────
+    let mut project_ids: HashSet<&str> = HashSet::new();
+    let mut project_parent: HashMap<&str, Option<&str>> = HashMap::new();
+    for (pi, p) in doc.projects.iter().enumerate() {
+        let pp = format!("projects[{pi}]");
+        let Some(id) = p.id.as_deref().filter(|id| !id.is_empty()) else {
+            err!("E104", &pp, "project missing id");
+            continue;
+        };
+        if !project_ids.insert(id) {
+            err!("E104", &pp, "duplicate project id {:?}", id);
+        }
+        if p.title.as_deref().unwrap_or("").is_empty() {
+            err!("E104", format!("{pp}.title"), "project {id} missing title");
+        }
+        project_parent.insert(id, p.parent.as_deref());
+    }
+    for (pi, p) in doc.projects.iter().enumerate() {
+        let Some(id) = p.id.as_deref().filter(|id| !id.is_empty()) else { continue };
+        if let Some(parent) = p.parent.as_deref() {
+            if !project_ids.contains(parent) {
+                err!("E105", format!("projects[{pi}].parent"), "project {id} has unknown parent {:?}", parent);
+                continue;
+            }
+        }
+        let mut seen = HashSet::new();
+        let mut cur = Some(id);
+        while let Some(pid) = cur {
+            if !seen.insert(pid) {
+                err!("E106", format!("projects[{pi}].parent"), "project hierarchy cycles through {pid:?}");
+                break;
+            }
+            cur = project_parent.get(pid).copied().flatten();
+        }
+    }
+
     // ── pass 1: identity indexes ─────────────────────────────────────
     let mut task_ids: HashSet<&str> = HashSet::new();
+    let mut task_by_id: HashMap<&str, &Task> = HashMap::new();
     let mut attempt_ids: HashMap<&str, String> = HashMap::new(); // id -> path
     let mut future_node_ids: HashSet<&str> = HashSet::new();
     for (ti, t) in tasks.iter().enumerate() {
@@ -121,6 +236,7 @@ pub fn check(doc: &Doc) -> Report {
             if !task_ids.insert(id) {
                 err!("E110", format!("tasks[{ti}]"), "duplicate task id {:?}", id);
             }
+            task_by_id.entry(id).or_insert(t);
         }
         for (ai, a) in t.attempts.iter().enumerate() {
             if let Some(id) = a.id.as_deref() {
@@ -290,6 +406,11 @@ pub fn check(doc: &Doc) -> Report {
         if t.kind.as_deref().unwrap_or("").is_empty() {
             err!("E111", format!("{tp}.kind"), "task {tid} missing kind");
         }
+        if let Some(project) = t.project.as_deref() {
+            if !project_ids.contains(project) {
+                err!("E107", format!("{tp}.project"), "task {tid} names unknown project {:?}", project);
+            }
+        }
         let state = t.state.as_deref().unwrap_or("");
         if state.is_empty() {
             err!("E111", format!("{tp}.state"), "task {tid} missing state");
@@ -306,6 +427,29 @@ pub fn check(doc: &Doc) -> Report {
             for i in inputs {
                 if !task_ids.contains(i.as_str()) {
                     err!("E121", format!("{tp}.inputs"), "gate {tid} has unknown input {:?}", i);
+                }
+            }
+        }
+        if t.kind.as_deref() == Some("gate") {
+            if let Some(gate_project) = t.project.as_deref() {
+                let inputs = t.inputs.as_ref().unwrap_or(&t.deps);
+                for input in inputs {
+                    if !task_by_id.contains_key(input.as_str()) {
+                        continue;
+                    }
+                    let input_project = task_project(
+                        input,
+                        &task_by_id,
+                        &project_parent,
+                        &mut HashSet::new(),
+                    );
+                    if !project_contains(gate_project, input_project, &project_parent) {
+                        err!(
+                            "E108",
+                            format!("{tp}.project"),
+                            "gate {tid} is in project {gate_project:?}, but input {input:?} lives outside that scope"
+                        );
+                    }
                 }
             }
         }
@@ -617,7 +761,23 @@ pub fn check(doc: &Doc) -> Report {
                     err!("E172", &ep, "directive event names no \"by\" — authority must be attributable");
                 }
             }
+            Some("message_resolved") => {
+                if e.task.as_deref().unwrap_or("").is_empty() {
+                    err!("E172", &ep, "message_resolved event names no task");
+                }
+                if e.message_id.as_deref().unwrap_or("").is_empty() {
+                    err!("E172", &ep, "message_resolved event names no message_id");
+                }
+                if e.detail.as_deref().unwrap_or("").is_empty() {
+                    err!("E172", &ep, "message_resolved event carries no resolution detail");
+                }
+            }
             _ => {}
+        }
+        if e.message_id.as_deref() == Some("")
+            || e.source_messages.iter().any(|id| id.is_empty())
+        {
+            err!("E172", &ep, "message correlations must be nonempty ids");
         }
     }
     if disordered {

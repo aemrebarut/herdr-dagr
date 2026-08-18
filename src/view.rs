@@ -4,7 +4,9 @@
 //! reference. The renderer never crashes on bad input: contract errors
 //! become a banner, and the last good scene stays up.
 
-use crate::{action, check, contract::Doc, herdr, model, picker, render, select, stats, style};
+use crate::{
+    action, check, contract::Doc, herdr, message, model, picker, render, select, stats, style,
+};
 use crossterm::{
     cursor, event, execute, queue,
     terminal::{self, ClearType},
@@ -31,6 +33,9 @@ struct Loaded {
     /// `start_action` uses these to refuse the specific broken template
     /// instead of running a repaired-or-different command (M4 F7).
     action_findings: Vec<(String, String)>,
+    message_starters: Vec<message::Starter>,
+    message_config_path: std::path::PathBuf,
+    message_summaries: Vec<message::Summary>,
 }
 
 fn load(path: &str) -> Result<Loaded, String> {
@@ -38,7 +43,7 @@ fn load(path: &str) -> Result<Loaded, String> {
     let doc: Doc =
         serde_json::from_str(&raw).map_err(|e| format!("not a contract document: {e}"))?;
     let report = check::check(&doc);
-    let banner = match report.errors() {
+    let mut banner = match report.errors() {
         0 => None,
         n => Some(format!(
             "{n} contract error{} — run `dagr check {path}`; drawing what parses",
@@ -53,7 +58,34 @@ fn load(path: &str) -> Result<Loaded, String> {
         .collect();
     let generated_min = doc.generated_at.as_deref().and_then(model::parse_min);
     let chip = stats::header_chip(&doc);
-    Ok(Loaded { doc, banner, generated_min, chip, action_findings })
+    let config = message::load_config(std::path::Path::new(path));
+    if let Some(warning) = config.warning {
+        banner = Some(match banner {
+            Some(existing) => format!("{existing} · actions config: {warning}"),
+            None => format!("actions config: {warning}"),
+        });
+    }
+    let run_id = doc.run.as_ref().and_then(|run| run.id.as_deref());
+    let message_summaries = match message::read_summaries(std::path::Path::new(path), run_id) {
+        Ok(messages) => messages,
+        Err(warning) => {
+            banner = Some(match banner {
+                Some(existing) => format!("{existing} · message journal: {warning}"),
+                None => format!("message journal: {warning}"),
+            });
+            Vec::new()
+        }
+    };
+    Ok(Loaded {
+        doc,
+        banner,
+        generated_min,
+        chip,
+        action_findings,
+        message_starters: config.starters,
+        message_config_path: config.path,
+        message_summaries,
+    })
 }
 
 /// The permissive contract types make `{}` a valid (empty) document.
@@ -113,6 +145,7 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
             watching: false,
             herdr: None, // hints are a live concern too
             prompt: None,
+            messages: &loaded.message_summaries,
         },
         w,
     );
@@ -135,6 +168,9 @@ enum Mode {
     Picker(picker::State),
     /// `/` — incremental row search; the query lives on the bottom line.
     Search { buf: String },
+    /// One editable contextual message. Starters only prefill text;
+    /// authority remains a separate field and Herdr owns delivery.
+    Message { draft: message::Draft },
 }
 
 /// How long the confirm gate must have been on screen before `y`
@@ -216,7 +252,7 @@ fn modal_step(
             Char('c') if ctrl => ModalStep::Cancel("cancelled"),
             _ => ModalStep::Stay(Mode::Confirm { pending, since }),
         },
-        // picker and search keys are handled by the event loop directly
+        // picker, search, and message keys are handled by the event loop directly
         m => ModalStep::Stay(m),
     }
 }
@@ -679,6 +715,7 @@ impl App {
             Some(render::HitTarget::Fold(key)) => {
                 self.folded.remove(&key);
             }
+            Some(render::HitTarget::Message) => self.start_message(),
             None => {}
         }
     }
@@ -740,6 +777,12 @@ impl App {
             Ok(msg) => {
                 self.flash = Some((msg, 12));
                 self.bg_rx = None;
+                let run_id = self.loaded.doc.run.as_ref().and_then(|run| run.id.as_deref());
+                if let Ok(messages) =
+                    message::read_summaries(std::path::Path::new(&self.path), run_id)
+                {
+                    self.loaded.message_summaries = messages;
+                }
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -766,6 +809,112 @@ impl App {
                 .unwrap_or_default();
             (sel.to_string(), latest)
         })
+    }
+
+    fn start_message(&mut self) {
+        let Some((target, _)) = self.action_target() else {
+            self.flash = Some(("select a task or gate first".into(), 8));
+            return;
+        };
+        if self.loaded.message_starters.is_empty() {
+            self.flash = Some(("no message starters available".into(), 8));
+            return;
+        }
+        self.mode = Mode::Message {
+            draft: message::Draft::from_starter(target, &self.loaded.message_starters, 0),
+        };
+    }
+
+    fn submit_message(&mut self, draft: message::Draft) {
+        if self.bg_rx.is_some() {
+            self.flash = Some(("another command is still in flight".into(), 10));
+            self.mode = Mode::Message { draft };
+            return;
+        }
+        let prepared = message::prepare(
+            std::path::Path::new(&self.path),
+            &self.loaded.doc,
+            &draft.target,
+            &draft.text,
+            draft.authority,
+        );
+        let submission = match prepared {
+            Ok(submission) => submission,
+            Err(e) => {
+                self.flash = Some((e, 16));
+                self.mode = Mode::Message { draft };
+                return;
+            }
+        };
+        let id = submission.id.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(message::deliver(submission));
+        });
+        self.bg_rx = Some(rx);
+        self.flash = Some((format!("recorded {id}; queueing…"), 20));
+    }
+
+    /// One key in the contextual message composer. Starters replace the
+    /// editable draft on Tab; ordinary text (including digits) remains
+    /// completely free-form.
+    fn message_key(&mut self, mut draft: message::Draft, k: event::KeyEvent) {
+        use event::KeyCode::*;
+        let ctrl = k.modifiers.contains(event::KeyModifiers::CONTROL);
+        let plain = !k
+            .modifiers
+            .intersects(event::KeyModifiers::CONTROL | event::KeyModifiers::ALT);
+        match k.code {
+            Esc => {
+                self.flash = Some(("message cancelled".into(), 6));
+            }
+            Char('c') if ctrl => {
+                self.flash = Some(("message cancelled".into(), 6));
+            }
+            Enter => self.submit_message(draft),
+            Tab | BackTab => {
+                let n = self.loaded.message_starters.len();
+                if n > 0 {
+                    let next = if matches!(k.code, BackTab) {
+                        (draft.starter + n - 1) % n
+                    } else {
+                        (draft.starter + 1) % n
+                    };
+                    draft = draft.switch_to(&self.loaded.message_starters, next);
+                }
+                self.mode = Mode::Message { draft };
+            }
+            Char('t') if ctrl => {
+                draft.authority = draft.authority.toggled();
+                self.mode = Mode::Message { draft };
+            }
+            Char('u') if ctrl => {
+                draft.text.clear();
+                self.mode = Mode::Message { draft };
+            }
+            Char('w') if ctrl => {
+                while draft.text.chars().last().is_some_and(|c| c.is_whitespace()) {
+                    draft.text.pop();
+                }
+                while draft.text.chars().last().is_some_and(|c| !c.is_whitespace()) {
+                    draft.text.pop();
+                }
+                self.mode = Mode::Message { draft };
+            }
+            Backspace => {
+                draft.text.pop();
+                self.mode = Mode::Message { draft };
+            }
+            Char(c) if plain => {
+                if draft.text.len() + c.len_utf8() <= message::MESSAGE_LIMIT {
+                    draft.text.push(c);
+                } else {
+                    self.flash = Some(("message is limited to 32 KiB".into(), 8));
+                }
+                self.mode = Mode::Message { draft };
+            }
+            _ => self.mode = Mode::Message { draft },
+        }
     }
 
     fn start_action(&mut self, key: char) {
@@ -846,6 +995,24 @@ impl App {
             Mode::Confirm { pending, .. } => {
                 Some(format!("run? {} — [y] run · [esc] cancel", pending.preview()))
             }
+            Mode::Message { draft } => {
+                let starter = self
+                    .loaded
+                    .message_starters
+                    .get(draft.starter)
+                    .map(|s| s.label.as_str())
+                    .unwrap_or("Custom");
+                Some(format!(
+                    "message → {} · {} ({}/{}) · authority: {}\n{}▏\nenter queue · tab starter · ctrl-t authority · esc cancel · config {}",
+                    draft.target,
+                    starter,
+                    draft.starter + 1,
+                    self.loaded.message_starters.len(),
+                    draft.authority.label(),
+                    draft.text,
+                    self.loaded.message_config_path.display(),
+                ))
+            }
             // the picker draws its own frame; search lives on the bottom line
             Mode::Picker(_) | Mode::Search { .. } => None,
         }
@@ -894,6 +1061,9 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         generated_min: None,
         chip: None,
         action_findings: Vec::new(),
+        message_starters: message::defaults(),
+        message_config_path: message::config_path(std::path::Path::new(&args.path)),
+        message_summaries: Vec::new(),
     });
     if initial_ok {
         // seed the `f` picker's recent list — sibling panes see it too
@@ -955,6 +1125,14 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
     let mut last_mtime: Option<SystemTime> = std::fs::metadata(&app.path)
         .and_then(|m| m.modified())
         .ok();
+    let mut watched_path = app.path.clone();
+    let mut config_path = message::config_path(std::path::Path::new(&app.path));
+    let mut journal_path = message::journal_path(std::path::Path::new(&app.path));
+    let sidecar_mtime = |path: &std::path::Path| {
+        std::fs::metadata(path).and_then(|m| m.modified()).ok()
+    };
+    let mut last_config_mtime = sidecar_mtime(&config_path);
+    let mut last_journal_mtime = sidecar_mtime(&journal_path);
     loop {
         app.poll_bg();
         app.poll_picker();
@@ -987,6 +1165,10 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         }
                         Mode::Search { buf } => {
                             app.search_key(buf, k);
+                            continue;
+                        }
+                        Mode::Message { draft } => {
+                            app.message_key(draft, k);
                             continue;
                         }
                         Mode::Normal => {}
@@ -1053,6 +1235,7 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                             app.flash = Some(("reloaded".into(), 6));
                         }
                         Char('?') => app.help = !app.help,
+                        Char('m') => app.start_message(),
                         Char(c @ ('u' | 'a' | 'o' | 'x')) => app.start_action(c),
                         _ => {}
                     }
@@ -1063,12 +1246,34 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                     // mistake for a decision. Newlines
                     // become spaces — one paste, one line, no hidden
                     // Enter riding along.
-                    if let Mode::Input { buf, .. } = &mut app.mode {
-                        buf.extend(
-                            s.chars()
-                                .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
-                                .filter(|c| !c.is_control()),
-                        );
+                    let clean = || {
+                        s.chars()
+                            .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
+                            .filter(|c| !c.is_control())
+                            .collect::<String>()
+                    };
+                    let clean = clean();
+                    match &mut app.mode {
+                        Mode::Input { buf, .. } => buf.push_str(&clean),
+                        Mode::Message { draft } => {
+                            let remaining = message::MESSAGE_LIMIT.saturating_sub(draft.text.len());
+                            let end = clean
+                                .char_indices()
+                                .map(|(i, _)| i)
+                                .take_while(|&i| i <= remaining)
+                                .last()
+                                .unwrap_or(0);
+                            let end = if clean.len() <= remaining {
+                                clean.len()
+                            } else {
+                                end
+                            };
+                            draft.text.push_str(&clean[..end]);
+                            if end < clean.len() {
+                                app.flash = Some(("message paste truncated at 32 KiB".into(), 8));
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 event::Event::Mouse(m) => {
@@ -1156,12 +1361,29 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                 _ => {}
             }
         }
+        // The file picker can switch runs without restarting the loop; move
+        // all three watches (run, prompt config, message journal) together.
+        if app.path != watched_path {
+            watched_path = app.path.clone();
+            config_path = message::config_path(std::path::Path::new(&app.path));
+            journal_path = message::journal_path(std::path::Path::new(&app.path));
+            last_mtime = std::fs::metadata(&app.path).and_then(|m| m.modified()).ok();
+            last_config_mtime = sidecar_mtime(&config_path);
+            last_journal_mtime = sidecar_mtime(&journal_path);
+        }
         // watch: reload when the producer rewrites the file
         if let Ok(m) = std::fs::metadata(&app.path).and_then(|m| m.modified()) {
             if last_mtime.map(|t| m > t).unwrap_or(true) {
                 last_mtime = Some(m);
                 app.reload();
             }
+        }
+        let config_mtime = sidecar_mtime(&config_path);
+        let journal_mtime = sidecar_mtime(&journal_path);
+        if config_mtime != last_config_mtime || journal_mtime != last_journal_mtime {
+            last_config_mtime = config_mtime;
+            last_journal_mtime = journal_mtime;
+            app.reload();
         }
         if let Some((_, ttl)) = &mut app.flash {
             if *ttl == 0 {
@@ -1204,7 +1426,10 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     let (w, h) = (w as usize, h as usize);
     // only the ACTION modals pin the frame tail (the confirm gate lives
     // there); the picker draws its own frame and search follows the cursor
-    let modal = matches!(app.mode, Mode::Input { .. } | Mode::Confirm { .. });
+    let modal = matches!(
+        app.mode,
+        Mode::Input { .. } | Mode::Confirm { .. } | Mode::Message { .. }
+    );
     let (lines, sel_line, prompt_line) = if app.help {
         app.hits = Vec::new();
         (render::help_lines(), None, None)
@@ -1232,6 +1457,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
                 watching: true,
                 herdr: hints.as_ref(),
                 prompt: app.prompt_line(),
+                messages: &app.loaded.message_summaries,
             },
             w,
         );
@@ -1352,6 +1578,89 @@ mod tests {
             Mode::Input { buf, .. } => buf,
             _ => panic!("expected Input"),
         }
+    }
+
+    fn message_test_app() -> App {
+        let starters = message::defaults();
+        App {
+            path: "run.json".into(),
+            loaded: Loaded {
+                doc: serde_json::from_str(
+                    r#"{"dagr":2,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"tasks":[]}"#,
+                )
+                .unwrap(),
+                banner: None,
+                generated_min: None,
+                chip: None,
+                action_findings: Vec::new(),
+                message_starters: starters,
+                message_config_path: "actions.json".into(),
+                message_summaries: Vec::new(),
+            },
+            selected: None,
+            queue_pos: 0,
+            flash: None,
+            help: false,
+            scroll: 0,
+            herdr: None,
+            mode: Mode::Normal,
+            gate_seen: false,
+            bg_rx: None,
+            hits: Vec::new(),
+            view_start: 0,
+            view_rows: 0,
+            frame: Vec::new(),
+            sel: None,
+            painted: Vec::new(),
+            zoom: Vec::new(),
+            folded: std::collections::HashSet::new(),
+            search: None,
+            search_matches: 0,
+            last_click: None,
+        }
+    }
+
+    #[test]
+    fn message_composer_cycles_editable_starters_and_authority_independently() {
+        let mut app = message_test_app();
+        let draft = message::Draft::from_starter(
+            "G1".into(),
+            &app.loaded.message_starters,
+            0,
+        );
+        app.message_key(
+            draft,
+            event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        let draft = match std::mem::replace(&mut app.mode, Mode::Normal) {
+            Mode::Message { draft } => draft,
+            _ => panic!("Tab should keep the composer open"),
+        };
+        assert_eq!(draft.starter, 1);
+        assert_eq!(draft.authority, message::Authority::Recommend);
+        assert!(draft.text.contains("independent guidance"));
+
+        app.message_key(
+            draft,
+            event::KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        );
+        let draft = match std::mem::replace(&mut app.mode, Mode::Normal) {
+            Mode::Message { draft } => draft,
+            _ => panic!("authority toggle should keep the composer open"),
+        };
+        assert_eq!(draft.authority, message::Authority::Decide);
+
+        app.message_key(
+            draft,
+            event::KeyEvent::new(KeyCode::Char('7'), KeyModifiers::NONE),
+        );
+        let draft = match std::mem::replace(&mut app.mode, Mode::Normal) {
+            Mode::Message { draft } => draft,
+            _ => panic!("ordinary text should keep the composer open"),
+        };
+        assert!(draft.text.ends_with('7'), "digits remain free-form text");
+        app.message_key(draft, event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     // ── F1: the viewport must never draw a gate below the fold ──────

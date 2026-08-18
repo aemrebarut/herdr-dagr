@@ -42,6 +42,17 @@ fn has(findings: &[(String, String)], code: &str) -> bool {
     findings.iter().any(|(_, c)| c == code)
 }
 
+#[test]
+fn version_reports_the_current_contract_and_compatibility() {
+    let out = Command::new(env!("CARGO_BIN_EXE_dagr"))
+        .arg("--version")
+        .output()
+        .expect("dagr runs");
+    assert!(out.status.success());
+    let version = String::from_utf8_lossy(&out.stdout);
+    assert!(version.contains("contract v2; reads v1"), "{version}");
+}
+
 /// A minimal valid document: one done task, one verified attempt.
 fn base() -> serde_json::Value {
     serde_json::json!({
@@ -66,6 +77,62 @@ fn clean_doc_exits_zero() {
     let (code, findings) = run_check(&base().to_string());
     assert_eq!(code, 0, "clean doc should exit 0, findings: {findings:?}");
     assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+}
+
+#[test]
+fn v2_projects_and_orchestrator_locator_are_clean() {
+    let mut d = base();
+    d["dagr"] = serde_json::json!(2);
+    d["run"]["orchestrator"] = serde_json::json!({"pane": "wX:p1"});
+    d["projects"] = serde_json::json!([
+        {"id": "P", "title": "Product"},
+        {"id": "A", "title": "Stream A", "parent": "P"}
+    ]);
+    d["tasks"][0]["project"] = serde_json::json!("A");
+    let (code, findings) = run_check(&d.to_string());
+    assert_eq!(code, 0, "v2 document should be clean: {findings:?}");
+}
+
+#[test]
+fn project_hierarchy_and_task_homes_are_validated() {
+    let mut d = base();
+    d["dagr"] = serde_json::json!(2);
+    d["projects"] = serde_json::json!([
+        {"id": "A", "title": "A", "parent": "B"},
+        {"id": "B", "title": "B", "parent": "A"}
+    ]);
+    d["tasks"][0]["project"] = serde_json::json!("MISSING");
+    let (_, findings) = run_check(&d.to_string());
+    assert!(has(&findings, "E106"), "project cycle: {findings:?}");
+    assert!(has(&findings, "E107"), "unknown task home: {findings:?}");
+}
+
+#[test]
+fn a_gate_cannot_claim_a_project_that_excludes_an_input() {
+    let mut d = base();
+    d["dagr"] = serde_json::json!(2);
+    d["projects"] = serde_json::json!([
+        {"id": "P", "title": "Parent"},
+        {"id": "A", "title": "A", "parent": "P"},
+        {"id": "B", "title": "B", "parent": "P"}
+    ]);
+    d["tasks"][0]["project"] = serde_json::json!("A");
+    let gate = serde_json::json!({
+        "id":"G", "title":"join", "kind":"gate", "project":"B",
+        "state":"queued", "deps":["A"], "attempts":[]
+    });
+    d["tasks"].as_array_mut().unwrap().push(gate);
+    let (_, findings) = run_check(&d.to_string());
+    assert!(has(&findings, "E108"), "{findings:?}");
+}
+
+#[test]
+fn empty_orchestrator_locator_is_e103() {
+    let mut d = base();
+    d["dagr"] = serde_json::json!(2);
+    d["run"]["orchestrator"] = serde_json::json!({});
+    let (_, findings) = run_check(&d.to_string());
+    assert!(has(&findings, "E103"), "{findings:?}");
 }
 
 #[test]
@@ -729,6 +796,12 @@ fn blocked_and_review_outrank_working_attempts() {
     assert!(t4.contains('■') && t4.contains("BLOCKED"), "task blocked must outrank attempt working: {t4:?}");
     let t3 = plain.lines().find(|l| l.contains("T3  ")).expect("T3 row");
     assert!(t3.contains('◈') && t3.contains("review"), "task review must outrank attempt working: {t3:?}");
+
+    let (_, selected) = run_snapshot(STATES, &["--width", "150", "--select", "T4"]);
+    assert!(
+        strip_ansi(&selected).contains("T4·a1 · attempt 1 · BLOCKED"),
+        "focus card must use the same effective state as the row:\n{selected}"
+    );
 }
 
 #[test]
@@ -799,11 +872,32 @@ fn seven_lane_join_doc_at_depth(root_depth: usize, gate_id: &str) -> String {
     .to_string()
 }
 
+fn in_nested_project(doc: &str, depth: usize) -> String {
+    let mut value: serde_json::Value = serde_json::from_str(doc).unwrap();
+    value["dagr"] = serde_json::json!(2);
+    value["projects"] = serde_json::Value::Array(
+        (0..depth)
+            .map(|i| {
+                let mut project = serde_json::json!({"id": format!("P{i}"), "title": format!("Level {i}")});
+                if i > 0 {
+                    project["parent"] = serde_json::json!(format!("P{}", i - 1));
+                }
+                project
+            })
+            .collect(),
+    );
+    let home = format!("P{}", depth - 1);
+    for task in value["tasks"].as_array_mut().unwrap() {
+        task["project"] = serde_json::json!(home);
+    }
+    value.to_string()
+}
+
 #[test]
 fn join_strip_degrades_from_inputs_to_counts_to_total() {
-    let doc = seven_lane_join_doc();
+    let doc = in_nested_project(&seven_lane_join_doc(), 4);
     let (_, wide) = run_snapshot(&doc, &["--width", "78"]);
-    let (_, compact) = run_snapshot(&doc, &["--width", "34"]);
+    let (_, compact) = run_snapshot(&doc, &["--width", "28"]);
     let (_, tiny) = run_snapshot(&doc, &["--width", "20"]);
     assert!(strip_ansi(&wide).contains("○○○○○○○→⋈ G"), "wide strip:\n{wide}");
     assert!(strip_ansi(&compact).contains("○7→⋈ G"), "counted strip:\n{compact}");
@@ -811,22 +905,22 @@ fn join_strip_degrades_from_inputs_to_counts_to_total() {
 }
 
 #[test]
-fn deep_rows_elide_ancestry_before_join_or_identity() {
-    let compact_doc = seven_lane_join_doc_at_depth(10, "GATE-LONG");
+fn deep_scope_milestones_keep_the_join_and_useful_identity() {
+    let compact_doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 10);
     let (_, tiny) = run_snapshot(&compact_doc, &["--width", "20"]);
     let plain = strip_ansi(&tiny);
     let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
-    assert!(gate.contains("…"), "deep ancestry is explicitly elided:\n{gate}");
+    assert!(plain.lines().any(|line| line.contains("▾ P9")), "deep project identity survives:\n{plain}");
     assert!(gate.contains("7→1 ⋈ GATE"), "join and useful id prefix survive:\n{gate}");
 
-    let full_doc = seven_lane_join_doc_at_depth(30, "GATE-LONG");
+    let full_doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 30);
     let (_, full) = run_snapshot(&full_doc, &["--width", "96"]);
     let plain = strip_ansi(&full);
     let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
-    assert!(gate.contains("…"), "deep ancestry is explicitly elided:\n{gate}");
+    assert!(plain.lines().any(|line| line.contains("▾ P29")), "deep project identity survives:\n{plain}");
     assert!(
         gate.contains("○7→⋈ GATE-LONG"),
-        "join and useful id prefix survive the full layout:\n{gate}"
+        "counted join and useful id survive the deep full layout:\n{gate}"
     );
 }
 
@@ -836,6 +930,12 @@ fn off_tree_annotations_render() {
     let plain = strip_ansi(&out);
     assert!(plain.contains("⇠ T3") && plain.contains("⇠ T7"), "extra deps beyond the rail get ⇠ chips");
     assert!(plain.contains("⇠ resync@G1"), "the task note is ink, not dead data");
+
+    let (_, compact) = run_snapshot(STATES, &["--width", "94"]);
+    assert!(
+        strip_ansi(&compact).contains("⇠"),
+        "compact rows preserve relational ink when space exists:\n{compact}"
+    );
 }
 
 #[test]

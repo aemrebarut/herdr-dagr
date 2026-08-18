@@ -445,16 +445,25 @@ fn apply_event(state: &Arc<Mutex<Hints>>, event: &str, data: Option<&serde_json:
 
 #[cfg(unix)]
 fn socket_request(method: &str, params: serde_json::Value) -> Result<(), String> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
     let sock = std::env::var("HERDR_SOCKET_PATH")
         .ok()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "not inside herdr".to_string())?;
+    socket_request_at(&sock, method, params)
+}
+
+#[cfg(unix)]
+fn socket_request_at(
+    sock: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<(), String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
     let req = serde_json::json!({"id": "dagr-focus", "method": method, "params": params});
     let mut conn =
-        UnixStream::connect(&sock).map_err(|e| format!("herdr socket: {e}"))?;
+        UnixStream::connect(sock).map_err(|e| format!("herdr socket: {e}"))?;
     conn.set_read_timeout(Some(Duration::from_secs(3))).ok();
     conn.set_write_timeout(Some(Duration::from_secs(3))).ok();
     conn.write_all((req.to_string() + "\n").as_bytes())
@@ -488,6 +497,36 @@ pub fn focus_pane(pane_id: &str) -> Result<(), String> {
 /// Focus a locator agent by name (`agent.focus`).
 pub fn focus_agent(name: &str) -> Result<(), String> {
     socket_request("agent.focus", serde_json::json!({"target": name}))
+}
+
+/// Queue an operator message to an orchestrator pane/agent. Herdr owns the
+/// input queue; dagr neither waits for nor interprets the response.
+#[cfg(unix)]
+pub fn prompt(target: &str, text: &str) -> Result<(), String> {
+    socket_request(
+        "agent.prompt",
+        serde_json::json!({"target": target, "text": text}),
+    )
+}
+
+/// Herdr uses a CLI transport on platforms without Unix-domain sockets.
+#[cfg(any(not(unix), test))]
+fn prompt_cli_args<'a>(target: &'a str, text: &'a str) -> [&'a str; 4] {
+    ["agent", "prompt", target, text]
+}
+
+#[cfg(not(unix))]
+pub fn prompt(target: &str, text: &str) -> Result<(), String> {
+    let output = std::process::Command::new("herdr")
+        .args(prompt_cli_args(target, text))
+        .output()
+        .map_err(|e| format!("cannot launch herdr: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if detail.is_empty() { "herdr prompt failed".into() } else { detail })
+    }
 }
 
 // ── tests: envelope fixtures from a live protocol-19 daemon ─────────
@@ -615,6 +654,57 @@ mod tests {
         assert!(parse_record(r#"[1,2]"#).is_err());
         assert!(parse_record(r#"{"id":"dagr-sub","result":{"type":"subscription_started"}}"#).is_ok());
         assert!(parse_record(r#"{"event":"pane_closed","data":{"pane_id":"p"}}"#).is_ok());
+    }
+
+    #[test]
+    fn prompt_uses_typed_agent_prompt_request() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let dir = std::env::temp_dir().join(format!(
+            "dagr-prompt-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("herdr.sock");
+        let listener = match UnixListener::bind(&sock) {
+            Ok(listener) => listener,
+            Err(e) => {
+                eprintln!("SKIPPED prompt_uses_typed_agent_prompt_request: {e}");
+                return;
+            }
+        };
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(conn);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(req["method"], "agent.prompt");
+            assert_eq!(req["params"]["target"], "wX:p1");
+            assert_eq!(req["params"]["text"], "hello\nworld");
+            reader
+                .get_mut()
+                .write_all(b"{\"id\":\"dagr-focus\",\"result\":{}}\n")
+                .unwrap();
+        });
+        socket_request_at(
+            sock.to_str().unwrap(),
+            "agent.prompt",
+            serde_json::json!({"target":"wX:p1","text":"hello\nworld"}),
+        )
+        .unwrap();
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn windows_prompt_cli_uses_the_documented_positional_shape() {
+        assert_eq!(
+            prompt_cli_args("wX:p1", "hello world"),
+            ["agent", "prompt", "wX:p1", "hello world"]
+        );
     }
 
     /// Full session against a fake daemon: ack gate, replay discard,

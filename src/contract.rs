@@ -13,7 +13,11 @@
 
 use serde::Deserialize;
 
-pub const CONTRACT_VERSION: u64 = 1;
+/// Version 2 adds optional recursive projects and an orchestrator locator.
+/// Version 1 remains readable so existing run files gain the corrected gate
+/// projection without a migration ceremony.
+pub const CONTRACT_VERSION: u64 = 2;
+pub const CONTRACT_VERSIONS: &[u64] = &[1, 2];
 
 pub const TASK_STATES: &[&str] = &[
     "queued", "working", "review", "blocked", "done", "failed", "rejected", "settled_unverified",
@@ -28,7 +32,7 @@ pub const CAUSE_TYPES: &[&str] = &["initial", "sent_back", "gate_failed", "follo
 pub const FUTURE_ON: &[&str] = &["pass", "fail"];
 pub const ATTRIBUTIONS: &[&str] = &["planned", "predicted"];
 pub const EVENT_TYPES: &[&str] = &[
-    "attempt_started", "attempt_settled", "promoted", "directive", "note",
+    "attempt_started", "attempt_settled", "promoted", "directive", "message_resolved", "note",
 ];
 pub const DIRECTIVE_VERBS: &[&str] = &["reject", "unblock", "answer", "rule"];
 /// Placeholders an action argv template may use (CONTRACT §9).
@@ -41,6 +45,10 @@ pub struct Doc {
     pub dagr: Option<u64>,
     pub run: Option<Run>,
     pub generated_at: Option<String>,
+    /// v2: recursive visual/organizational scopes. The run is the implicit
+    /// root project; these are optional named descendants.
+    #[serde(default)]
+    pub projects: Vec<Project>,
     pub tasks: Option<Vec<Task>>,
     #[serde(default)]
     pub events: Vec<Event>,
@@ -74,6 +82,19 @@ pub struct Run {
     pub id: Option<String>,
     pub title: Option<String>,
     pub started_at: Option<String>,
+    /// Where operator messages from the pane should be queued. This is a
+    /// transport locator, not a second workflow engine.
+    pub orchestrator: Option<Locator>,
+}
+
+#[derive(Deserialize)]
+pub struct Project {
+    pub id: Option<String>,
+    pub title: Option<String>,
+    /// Omit for a direct child of the run root.
+    pub parent: Option<String>,
+    pub owner: Option<String>,
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -82,12 +103,18 @@ pub struct Task {
     pub title: Option<String>,
     pub kind: Option<String>,
     pub owner: Option<String>,
+    /// v2 visual home. Dependencies may freely cross project boundaries;
+    /// those edges remain graph edges rather than forcing duplicate homes.
+    pub project: Option<String>,
     pub state: Option<String>,
     #[serde(default)]
     pub deps: Vec<String>,
     pub inputs: Option<Vec<String>>,
     pub unblock: Option<String>,
     pub note: Option<String>,
+    /// Human-readable acceptance/gate criterion. It is displayed as
+    /// context, never executed by dagr.
+    pub criteria: Option<String>,
     pub policy: Option<Policy>,
     #[serde(default)]
     pub attempts: Vec<Attempt>,
@@ -188,4 +215,8 @@ pub struct Event {
     pub verb: Option<String>,
     pub by: Option<String>,
     pub detail: Option<String>,
+    /// Durable correlation back to the immutable operator message journal.
+    pub message_id: Option<String>,
+    #[serde(default)]
+    pub source_messages: Vec<String>,
 }

@@ -15,7 +15,7 @@
 
 id = "herdr-dagr"
 name = "herdr-dagr"
-version = "0.1.5"
+version = "0.2.0"
 description = "Your agent swarm as a live DAG: an orchestration graph with attempts, review gates, and evidence, in a herdr split pane."
 min_herdr_version = "0.8.0"
 platforms = ["linux", "macos", "windows"]

@@ -1,6 +1,6 @@
 ---
 name: dagr-producer
-description: Emit and maintain a dagr run file — a live, contract-valid JSON description of a multi-agent run (tasks, attempts, causes, evidence, policies, events) that `dagr view` renders as a DAG. Use when orchestrating agents or tracking multi-step work that a dagr pane should display.
+description: Emit and maintain a dagr run file — a live, contract-valid JSON description of recursive projects, tasks, attempts, gates, evidence, policies, events, and operator-message resolutions that `dagr view` renders as a DAG. Use when orchestrating agents or tracking multi-step work that a dagr pane should display.
 ---
 
 # dagr producer — write the run, prove the run
@@ -11,7 +11,7 @@ assert and nothing else. If you don't write a fact, it doesn't exist on
 screen; if you write a wrong fact, it is wrong on screen. There is no
 inference layer to save you.
 
-Contract version: **`"dagr": 1`** (this skill is versioned with it).
+Contract version: **`"dagr": 2`** (v1 files remain readable; write v2 for new runs).
 
 ## Find your validator (before you write anything)
 
@@ -65,6 +65,10 @@ workflow gets its own run file and its own pane.
 
 ## Object model in one breath
 
+- **Project** = the recursive visual scope. The run is the implicit root;
+  `projects[]` may have `parent`. A phase or workstream is just a project,
+  not another entity. Each task has one optional `project` home, while its
+  dependency edges may cross any project boundary.
 - **Task** = the work item. Stable `id` you choose (never a pane id).
   `kind` is an open set — `impl · review · test · gate · question · docs ·
   ship · …` — pick the honest one (`question` for a task that exists to be
@@ -79,7 +83,7 @@ workflow gets its own run file and its own pane.
   follows its latest attempt, so a send-back moves a `done` task back to
   `working` as its new attempt opens.
 - **Event** = append-only provenance: `attempt_started · attempt_settled ·
-  promoted · directive · note`, ascending `at` timestamps. Never rewrite
+  promoted · directive · message_resolved · note`, ascending `at` timestamps. Never rewrite
   or reorder events.
 - **Evidence tier** on every terminal outcome: `verified` (mechanically
   checked — test run, commit receipt) · `reported` (typed envelope from
@@ -117,6 +121,13 @@ workflow gets its own run file and its own pane.
 7. **Blocked names its unblocker**; **promotion is an event**, not
    an inference — emit `{"type": "promoted", "task": ...}` when a fan-in
    completes.
+8. **Project containment is not dependency.** Give each task one truthful
+   visual home; keep every blocker in `deps`, including cross-project edges.
+   Never duplicate a task into two projects to make both impacts visible.
+9. **Operator messages retain their authority and id.** The pane delivers a
+   `[DAGR OPERATOR MESSAGE]` envelope to you. Respect `recommend_and_return`
+   versus `may_decide_and_continue`; preserve `message_id` in the resolution
+   event. dagr transports the request but does not act on it for you.
 
 ## Recipes
 
@@ -131,9 +142,14 @@ locator + liveness) that `dagr check` will hold you to.
 
 ```json
 {
-  "dagr": 1,
-  "run": {"id": "run-myjob-v01", "title": "what this run is", "started_at": "2026-02-01T09:00:00Z"},
+  "dagr": 2,
+  "run": {
+    "id": "run-myjob-v01", "title": "what this run is",
+    "started_at": "2026-02-01T09:00:00Z",
+    "orchestrator": {"pane": "wX:p1"}
+  },
   "generated_at": "2026-02-01T09:00:00Z",
+  "projects": [],
   "tasks": [],
   "events": []
 }
@@ -141,6 +157,29 @@ locator + liveness) that `dagr check` will hold you to.
 
 Refresh `generated_at` on every write — it anchors every "Nm ago" on
 screen, and a stale value renders a staleness banner.
+
+Set `run.orchestrator` automatically from your own `$HERDR_PANE_ID` when
+available (or a stable Herdr agent target otherwise). This is where `m`
+queues operator messages; do not point it at a worker. No user onboarding
+step or extra controller is required.
+
+### Shape projects before tasks
+
+Use the smallest hierarchy that provides honest visual homes. Do not create
+separate `phases` or `workstreams` arrays:
+
+```json
+"projects": [
+  {"id": "APP", "title": "Application"},
+  {"id": "API", "title": "API stream", "parent": "APP", "owner": "api-lead"},
+  {"id": "UI", "title": "UI stream", "parent": "APP", "owner": "ui-lead"}
+]
+```
+
+A task in `API` uses `"project": "API"`. If a UI task depends on it, keep
+the UI task in `UI` and put the API task id in its `deps`; the renderer shows
+the cross-project edge. Do not duplicate the task or force it into the
+common parent. Omit `project` only for genuinely run-level work.
 
 ### Open a task and start its first attempt
 
@@ -226,6 +265,7 @@ differs from the dependency set:
 
 ```json
 {"id": "G1", "title": "gate: merge lanes", "kind": "gate", "owner": "orchestrator",
+ "project": "APP", "criteria": "API and UI reviews are clean",
  "state": "queued", "deps": ["L1", "L2", "L3"], "attempts": []}
 ```
 
@@ -233,11 +273,19 @@ Declare gate inputs in the intentional human reading order, and keep the
 whole `tasks` array intentional too: dagr preserves declaration order for
 attempt-less siblings and for the gate's state-bearing join strip. Do not
 rename ids for sorting, attach the gate to one lane as a layout workaround,
-or add a synthetic "join" task. Declare the truthful fan-in; dagr attaches an
-all-queued gate at the inputs' deepest shared ancestor and renders each direct
-input as `○` waiting, `◎` working, or `●` satisfied (plus the normal
+or add a synthetic "join" task. Declare the truthful fan-in. A gate with
+`project` is a milestone in that project; without one, dagr places it at the
+nearest project shared by all inputs. Therefore a gate local to `API` stays
+inside `API`, a gate joining `API` and `UI` lives in their parent `APP`, and a
+gate joining unrelated top-level projects is a run-level milestone. Input
+attempt timestamps never choose its parent. Each direct input renders as
+`○` waiting, `◎` working, or `●` satisfied (plus the normal
 blocked/review/failure marks). On narrow panes it aggregates those marks; a
 selected gate still reveals the exact input ids.
+
+Prefer an explicit `project` when the organizational ownership is known;
+omit it when inference from input homes is the truthful answer. Never add a
+fake dependency solely to move a gate on screen.
 
 When the last input lands, append a `promoted` event — **with its `at`
 timestamp**, like every event:
@@ -335,40 +383,77 @@ The same pattern settles any human-resolved task (an unblock that closes
 a `question`, a rule that retires a task). Complete document:
 [`examples/07-answer-question.json`](examples/07-answer-question.json).
 
-### Declare the actions block (the pane's only mutating surface)
+### Handle an operator message
 
-Only the producer can emit `actions` — argv templates naming YOUR
-own CLI, which the pane offers behind a confirm gate (`u` unblock,
-`a` answer, `o` accept, `x` reject; CONTRACT §9). Without the block,
-the pane's action keys stay inert against your file, with no diagnostic.
+The pane's default action is one contextual message composer. Herdr queues
+the finished message directly to the `run.orchestrator` locator, so do not
+build another inbox daemon. You receive an envelope like:
+
+```text
+[DAGR OPERATOR MESSAGE]
+message_id: msg-0123456789abcdef
+run: run-myjob-v01
+revision: 2026-02-01T09:42:00Z
+target: G1
+authority: recommend_and_return
+
+Ask sol5.6·max and fable·xhigh independently, then combine their opinions.
+```
+
+Do this:
+
+1. Acknowledge the message. Treat the raw prose as instructions about the
+   named target, bounded by the existing run scope.
+2. Obey authority independently of prose:
+   `recommend_and_return` means do the analysis and return the choice;
+   `may_decide_and_continue` lets you decide and proceed. Never infer the
+   second from wording such as “best guess”.
+3. Use your normal orchestration tools. If the user asks for several agents,
+   models, efforts, independent opinions, or synthesis, spawn/queue those
+   through Herdr and combine them. If they snooze, use your normal monitor,
+   background process, or cron approach. dagr runs none of this.
+4. Keep the `message_id` through follow-ups. On resolution, append an event:
 
 ```json
-"actions": {
-  "unblock": {"argv": ["mycli", "unblock", "{task}", "--by", "{operator}", "--key", "{key}"]},
-  "answer":  {"argv": ["mycli", "answer", "{task}", "--text", "{text}", "--key", "{key}"]},
-  "accept":  {"argv": ["mycli", "accept", "{task}", "--attempt", "{attempt}", "--key", "{key}"]},
-  "reject":  {"argv": ["mycli", "reject", "{task}", "--attempt", "{attempt}", "--reason", "{text}", "--key", "{key}"]}
+{"at":"2026-02-01T09:50:00Z","type":"message_resolved","task":"G1",
+ "message_id":"msg-0123456789abcdef",
+ "detail":"recommended option B after two independent reviews; awaiting operator"}
+```
+
+If several messages informed one decision, set `source_messages` on the
+directive/resolution event. Do not edit `messages.jsonl`; dagr owns that
+append-only delivery journal. Your event is the durable project-memory link
+back to it.
+
+### Customize the three prompt starters when asked
+
+There is no onboarding step. The built-ins (Use judgment, Get guidance,
+Snooze) are available by default. If the user asks to add or change an action, atomically
+write `actions.json` beside the run file:
+
+```json
+{
+  "version": 1,
+  "include_defaults": true,
+  "actions": [
+    {"id":"architecture-council", "label":"Architecture council",
+     "prompt":"Ask two independent architecture reviewers and synthesize.",
+     "authority":"recommend"}
+  ]
 }
 ```
 
-Rules the validator holds you to: argv **arrays, never shell strings** —
-and never re-introduce an interpreter (`["sh","-c","… {text} …"]` makes
-typed text shell code); every template must carry `{key}`, the
-idempotency token your CLI dedupes on; `argv[0]` must be a **literal**
-executable name — nonempty, no placeholders: the binary is
-pinned by the template, never resolved from run data; a document that
-declares `actions` must carry `generated_at` — the key hashes
-the revision, and without one repeated intents key identically forever;
-unknown placeholders and malformed elements fail the check, and a verb
-the pane has no key for draws a warning. Two design rules beyond the
-validator: any
-task your CLI mutates should be NAMED in the argv (an explicit
-`--reopen <task>` flag, not a target resolved internally — the confirm
-gate can only disclose what the argv contains), and a send-back must
-not invert review state (the review attempt settles `done`; what it
-rejects is the attempt under review — see "Send back and re-enter").
-Your CLI must apply one key at most once — the reference implementation
-is `demos/actions/producer.py` in the dagr repo.
+Each action is only a prefilled editable prompt plus `recommend|decide`
+authority. Keep the list small; prefer one flexible starter over many rigid
+buttons. An id matching a built-in overrides it. `include_defaults: false`
+replaces the built-ins. Config version `1` is the supported shape; at most
+nine starters are shown, labels are capped at 80 bytes, and prompts at 32 KiB.
+The pane reloads this file automatically and shows a banner for invalid or
+unsupported configuration.
+
+The old top-level run `actions` argv templates remain supported for v1
+producers, but do not add them to new workflows unless the user explicitly
+needs a direct legacy CLI mutation path.
 
 ### Lose a runtime
 
@@ -391,7 +476,7 @@ the record.
 
 ## Field reference
 
-The full schema is `CONTRACT.md` (Schema v1 section) in the dagr repo;
+The full schema is `CONTRACT.md` (Schema v2 section) in the dagr repo;
 findings codes are listed there too. When `dagr check --json` names a code
 you don't recognize, read its message — every finding carries the JSON
 path of the offending field.

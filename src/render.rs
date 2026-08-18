@@ -173,10 +173,57 @@ fn head_min_width(row: &Row, name_prefix: usize) -> usize {
         + base
 }
 
+/// Recursive projects are visual containers, not fake tasks. One quiet
+/// heading and a hairline communicate scope without adding another tree
+/// node or competing with the task-state glyph grammar.
+fn project_line(row: &Row, w: usize) -> String {
+    let mut l = Line::new(w);
+    let status_w = seg_width(&row.status).min(30);
+    let min_head = 2 + row.name.width().min(8); // ▾ + gap + useful id
+    let show_status = status_w > 0 && w > 1 + min_head + 2 + status_w;
+    let status_x = if show_status { w.saturating_sub(status_w + 1) } else { w };
+    let max_rail = status_x.saturating_sub(2).saturating_sub(min_head);
+    let rail = fit_rail(&row.rail, max_rail);
+    let mut x = l.put(1, &rail, Style::fg(style::EDGE));
+    x = l.put(x, "▾ ", Style::bold(row.glyph_color));
+    x = l.put(
+        x,
+        &trunc(&row.name, status_x.saturating_sub(x)),
+        Style::bold(style::TEXT),
+    );
+    if !row.title.is_empty() && x + 3 < status_x {
+        x = l.put(
+            x,
+            &trunc(
+                &format!(" · {}", row.title),
+                status_x.saturating_sub(x + 1),
+            ),
+            Style::fg(style::TEXT),
+        );
+    }
+    if !row.chips.is_empty() && x + 2 < status_x {
+        x = seg_put(&mut l, x + 2, &row.chips, status_x.saturating_sub(1));
+    }
+    if show_status && x + 2 < status_x {
+        l.put(
+            x + 1,
+            &"─".repeat(status_x.saturating_sub(x + 2)),
+            Style::dim(style::RULE),
+        );
+    }
+    if show_status && status_x > x + 1 {
+        seg_put(&mut l, status_x, &row.status, w.saturating_sub(1));
+    }
+    l.render(None, true)
+}
+
 /// One full-grammar trace row, responsive: model/status/agent columns
 /// hang off the right edge. Also returns the column span of the fold
 /// chip when one was drawn, so a click on it can toggle the fold.
 fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
+    if row.project {
+        return (project_line(row, w), None);
+    }
     let model_x = w.saturating_sub(44);
     let st_x = w.saturating_sub(31);
     let ag_x = w.saturating_sub(21);
@@ -214,6 +261,13 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
     if !row.chips.is_empty() {
         x = seg_put(&mut l, x + 2, &row.chips, model_x.saturating_sub(1));
     }
+    if row.milestone && x + 2 < model_x {
+        l.put(
+            x + 1,
+            &"─".repeat(model_x.saturating_sub(x + 2)),
+            Style::dim(style::ACCENT),
+        );
+    }
     if let Some(tag) = &row.tag {
         // selection ink stays in the title column — drop it rather than
         // run under the right-hung model/status columns
@@ -229,6 +283,9 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
 
 /// Narrow two-column row for the sidecar's left panel.
 fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
+    if row.project {
+        return (project_line(row, w), None);
+    }
     // Size the right-aligned status before the join/head. Both are primary
     // signals; title/model text uses only the space that remains.
     let mut tail: Vec<(String, Style)> =
@@ -281,16 +338,26 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
         l.put(x - 1, "↩", Style::bold(style::REJECTED));
     }
     x = row_head(&mut l, row, x, status_x.saturating_sub(1), w <= 24, 4);
-    // the fold marker survives compaction: ▸ + hidden count, tinted by
-    // the strongest attention state inside the fold
+    // The aggregate row already says `▸ N items`; use the compact space for
+    // its composition rather than repeating the hidden count.
     let mut fold_span = None;
     if let Some(f) = &row.fold {
         let fx = x + 1;
-        x = l.put(fx, &format!("▸{}", f.hidden), Style::bold(f.hot.unwrap_or(style::ACCENT)));
+        x = seg_put(&mut l, fx, &f.segs, status_x.saturating_sub(1));
         fold_span = Some((fx, x));
     }
     // short title: drop the "kind: " prefix, truncate hard
     let room = status_x.saturating_sub(x + 2);
+    // Relational ink is part of the graph, not decoration. When compact
+    // rows have enough room, reserve a small lane for cross-project/extra
+    // dependency and criteria chips instead of letting the title consume
+    // every remaining cell.
+    let chip_room = if row.chips.is_empty() || room < 10 {
+        0
+    } else {
+        seg_width(&row.chips).min(18).min(room / 2)
+    };
+    let title_room = room.saturating_sub(chip_room + usize::from(chip_room > 0));
     let short = row.title.split_once(": ").map(|(_, t)| t).unwrap_or(&row.title);
     let title_style = if row.dotted {
         Style::dim(style::GHOST)
@@ -299,7 +366,15 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
     } else {
         Style::fg(style::TEXT)
     };
-    let left_end = l.put(x + 1, &trunc(short, room), title_style);
+    let mut left_end = l.put(x + 1, &trunc(short, title_room), title_style);
+    if chip_room > 0 {
+        left_end = seg_put(
+            &mut l,
+            left_end + 1,
+            &row.chips,
+            (left_end + 1 + chip_room).min(status_x.saturating_sub(1)),
+        );
+    }
     // right-anchored annotations, strictly leftover space — never at the
     // title's expense. The » gate tag (selection ink) outranks the model
     // chip; each appears only with a 2-col gap on both sides, and both
@@ -316,7 +391,15 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
         let mx = anchor.saturating_sub(row.model.width() + 2);
         if mx >= left_end + 2 {
             l.put(mx, &row.model, Style::dim(style::MUTED));
+            anchor = mx;
         }
+    }
+    if row.milestone && left_end + 2 < anchor {
+        l.put(
+            left_end + 1,
+            &"─".repeat(anchor.saturating_sub(left_end + 2)),
+            Style::dim(style::ACCENT),
+        );
     }
     // right edge: the pre-sized status tail, right-aligned — the evidence
     // glyph and waits-target survive compaction (F6).
@@ -352,21 +435,12 @@ fn find_selection<'a>(doc: &'a Doc, key: &str) -> Option<(&'a Task, Option<&'a A
         })
 }
 
-fn actions_for(state: &str) -> &'static str {
-    match state {
-        "blocked" => "[u]nblock  [a]nswer  [enter] focus pane",
-        "review" => "[o]k approve  [x] reject  [enter] open diff",
-        "working" => "[enter] focus pane  [i]nterrupt  [p]eek",
-        "lost" => "[enter] focus pane  [r]espawn?",
-        _ => "[enter] focus pane",
-    }
-}
-
 pub fn focus_card(
     doc: &Doc,
     key: &str,
     cw: usize,
     hints: Option<&crate::herdr::Hints>,
+    messages: &[crate::message::Summary],
 ) -> Vec<String> {
     // below ~8 cols no card grammar survives; claim the space, draw nothing
     if cw < 8 {
@@ -375,16 +449,30 @@ pub fn focus_card(
     let Some((task, attempt)) = find_selection(doc, key) else {
         return vec![paint("  (nothing selected)", Style::dim(style::MUTED))];
     };
-    let state = attempt
+    let attempt_state = attempt
         .and_then(|a| a.state.as_deref())
         .or(task.state.as_deref())
         .unwrap_or("queued");
+    let state = if matches!(attempt_state, "working" | "queued") {
+        task.state
+            .as_deref()
+            .filter(|state| matches!(*state, "blocked" | "review"))
+            .unwrap_or(attempt_state)
+    } else {
+        attempt_state
+    };
     let col = style::state_color(state);
     let inner = cw.saturating_sub(4);
     let now = doc.generated_at.as_deref().and_then(parse_min);
     let mut body: Vec<(String, Style)> = Vec::new();
 
     body.push((task.title.clone().unwrap_or_default(), Style::fg(style::TEXT)));
+    if let Some(project) = task.project.as_deref() {
+        body.push((format!("project {project}"), Style::dim(style::MUTED)));
+    }
+    if let Some(criteria) = task.criteria.as_deref() {
+        body.push((format!("criteria {criteria}"), Style::fg(style::DONE)));
+    }
 
     // meta line
     let mut meta = Vec::new();
@@ -573,7 +661,36 @@ pub fn focus_card(
         body.push((format!("{at} {what}"), Style::dim(style::MUTED)));
     }
 
-    body.push((actions_for(state).to_string(), Style::fg(style::ACCENT)));
+    let recent_messages: Vec<_> = messages.iter().filter(|m| m.target == tid).collect();
+    for message in recent_messages.iter().skip(recent_messages.len().saturating_sub(2)) {
+        let resolved = doc.events.iter().any(|e| {
+            e.message_id.as_deref() == Some(message.id.as_str())
+                || e.source_messages.iter().any(|id| id == &message.id)
+        });
+        let status = if resolved { "resolved" } else { message.status.as_str() };
+        let text = message
+            .text
+            .chars()
+            .filter_map(|c| match c {
+                '\n' | '\r' => Some('↵'),
+                '\t' => Some(' '),
+                c if c.is_control() => None,
+                c => Some(c),
+            })
+            .collect::<String>();
+        body.push((
+            format!(
+                "↗ {} · {} · {} · {}",
+                message.id,
+                status,
+                message.authority.label(),
+                text
+            ),
+            if resolved { Style::dim(style::DONE) } else { Style::fg(style::ACCENT) },
+        ));
+    }
+
+    body.push(("[m] message orchestrator  [enter] focus pane".into(), Style::fg(style::ACCENT)));
 
     // frame it
     let disp = attempt.and_then(|a| a.id.clone()).unwrap_or_else(|| tid.to_string());
@@ -646,6 +763,8 @@ pub struct FrameInput<'a> {
     pub herdr: Option<&'a crate::herdr::Hints>,
     /// Modal action prompt (M4): the text-input / confirm-gate line.
     pub prompt: Option<String>,
+    /// Append-only operator-message state reconstructed once per reload.
+    pub messages: &'a [crate::message::Summary],
 }
 
 /// What a left-click on a frame region means. The renderer owns the
@@ -659,6 +778,8 @@ pub enum HitTarget {
     Task(String),
     /// toggle this row's fold open (the ▸ chip)
     Fold(String),
+    /// Open the contextual orchestrator-message composer.
+    Message,
 }
 
 pub struct Hit {
@@ -734,7 +855,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         let mut right: Vec<String> = queue_panel(scene, right_w);
         right.push(String::new());
         if let Some(k) = sel {
-            right.extend(focus_card(input.doc, k, right_w, input.herdr));
+            right.extend(focus_card(input.doc, k, right_w, input.herdr, input.messages));
         }
         let left: Vec<(String, Option<(usize, usize)>)> = scene
             .rows
@@ -773,6 +894,16 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
                 target: HitTarget::Task(item.task_id.clone()),
             });
         }
+        if sel.is_some() {
+            if let Some(i) = right.iter().position(|line| line.contains("[m] message")) {
+                hits.push(Hit {
+                    line: base + i,
+                    x0: left_w + 2,
+                    x1: w,
+                    target: HitTarget::Message,
+                });
+            }
+        }
         for i in 0..rows_n {
             let l = left
                 .get(i)
@@ -806,7 +937,17 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
         out.push(String::new());
         if let Some(k) = sel {
-            out.extend(focus_card(input.doc, k, w.min(96), input.herdr));
+            let card = focus_card(input.doc, k, w.min(96), input.herdr, input.messages);
+            let card_start = out.len();
+            if let Some(i) = card.iter().position(|line| line.contains("[m] message")) {
+                hits.push(Hit {
+                    line: card_start + i,
+                    x0: 0,
+                    x1: w,
+                    target: HitTarget::Message,
+                });
+            }
+            out.extend(card);
         }
     }
 
@@ -820,20 +961,22 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         // needs; clipping could hide a trailing argument.
         use unicode_width::UnicodeWidthChar;
         let avail = w.saturating_sub(2).max(8);
-        let mut chunk = String::new();
-        let mut cw = 0usize;
         let mut chunks = Vec::new();
-        for ch in p.chars() {
-            let chw = ch.width().unwrap_or(1);
-            if cw + chw > avail && !chunk.is_empty() {
-                chunks.push(std::mem::take(&mut chunk));
-                cw = 0;
+        for logical in p.split('\n') {
+            let mut chunk = String::new();
+            let mut cw = 0usize;
+            for ch in logical.chars() {
+                let chw = ch.width().unwrap_or(1);
+                if cw + chw > avail && !chunk.is_empty() {
+                    chunks.push(std::mem::take(&mut chunk));
+                    cw = 0;
+                }
+                chunk.push(ch);
+                cw += chw;
             }
-            chunk.push(ch);
-            cw += chw;
-        }
-        if !chunk.is_empty() {
-            chunks.push(chunk);
+            if !chunk.is_empty() || logical.is_empty() {
+                chunks.push(chunk);
+            }
         }
         for c in chunks {
             let mut l = Line::new(w);
@@ -861,8 +1004,8 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
         // curated, not complete — the flash shares this row and must keep
         // room to speak; `?` holds the full list
-        let full = "j/k move · ←/→ fold/zoom · tab queue · enter focus · u/a/o/x act · f open · ? help · q quit";
-        let mid = "j/k · ←/→ · tab · enter · u/a/o/x · f · ? · q";
+        let full = "j/k move · ←/→ fold/zoom · tab queue · enter focus · m message · f open · ? help · q quit";
+        let mid = "j/k · ←/→ · tab · enter · m message · f · ? · q";
         let keys = if full.width() < avail {
             full
         } else if mid.width() < avail {
@@ -892,7 +1035,9 @@ pub fn help_lines() -> Vec<String> {
         ("ctrl-d / ctrl-u", "half a screen down · up"),
         ("tab", "cycle the attention queue (blocked → review → working)"),
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
-        ("u / a / o / x", "unblock · answer · accept · reject — producer-declared, confirm-gated"),
+        ("m", "message the orchestrator · Tab picks a starter · text stays editable"),
+        ("ctrl-t in message", "toggle explicit authority: return to me ↔ may decide + continue"),
+        ("u / a / o / x", "legacy producer CLI actions, when declared · confirm-gated"),
         ("f", "open another run file (type to filter · recent files first)"),
         ("/", "find a row by id, title, or agent · n/N cycle the matches"),
         ("y", "copy the selected row id to the clipboard"),
@@ -945,6 +1090,7 @@ mod tests {
                 watching: false,
                 herdr: None,
                 prompt: None,
+                messages: &[],
             },
             w,
         );
@@ -982,6 +1128,47 @@ mod tests {
     }
 
     #[test]
+    fn selected_focus_card_exposes_a_message_hit_in_both_layouts() {
+        let doc = sample();
+        for w in [150usize, 72] {
+            let initial = model::build(&doc, None, None, None, &model::ViewOpts::default());
+            let selected = initial
+                .rows
+                .iter()
+                .find(|r| r.selectable)
+                .unwrap()
+                .key
+                .clone();
+            let scene = model::build(
+                &doc,
+                Some(&selected),
+                None,
+                None,
+                &model::ViewOpts::default(),
+            );
+            let frame = compose(
+                &FrameInput {
+                    doc: &doc,
+                    scene: &scene,
+                    selected: Some(&selected),
+                    banner: None,
+                    flash: None,
+                    stale_min: None,
+                    watching: false,
+                    herdr: None,
+                    prompt: None,
+                    messages: &[],
+                },
+                w,
+            );
+            assert!(
+                frame.hits.iter().any(|h| matches!(h.target, HitTarget::Message)),
+                "w={w}: focus-card message action must be clickable"
+            );
+        }
+    }
+
+    #[test]
     fn fold_chip_hit_precedes_the_row_hit_in_both_layouts() {
         let doc = sample();
         let base = model::build(&doc, None, None, None, &model::ViewOpts::default());
@@ -1008,6 +1195,7 @@ mod tests {
                     watching: false,
                     herdr: None,
                     prompt: None,
+                    messages: &[],
                 },
                 w,
             );

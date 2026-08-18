@@ -7,6 +7,7 @@ mod action;
 mod check;
 mod contract;
 mod herdr;
+mod message;
 mod model;
 mod picker;
 mod render;
@@ -24,7 +25,7 @@ USAGE:
   dagr check <run.json> [--json] [--strict]
       lint a run-state document against the contract
   dagr view [run.json] [--snapshot] [--width N] [--select ID]
-      draw the run: interactive pane (j/k · tab · enter · u/a/o/x · ? · q),
+      draw the run: interactive pane (j/k · tab · enter · m message · ? · q),
       watches the file for changes; --snapshot prints one frame to stdout.
       Without a path: $DAGR_RUN, then .dagr/run.json / run.json under the
       herdr context cwd (waits for the file if none exists yet)
@@ -62,7 +63,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {
-            println!("dagr {} (contract v1)", env!("CARGO_PKG_VERSION"));
+            println!("dagr {} (contract v2; reads v1)", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         _ => {

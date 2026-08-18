@@ -1,0 +1,59 @@
+{
+  "dagr": 2,
+  "run": {
+    "id": "run-projects-v01",
+    "title": "example: recursive projects and scope gates",
+    "started_at": "2026-08-17T09:00:00Z",
+    "orchestrator": {"pane": "wX:p1"}
+  },
+  "generated_at": "2026-08-17T09:20:00Z",
+  "projects": [
+    {"id": "APP", "title": "Application", "owner": "lead"},
+    {"id": "API", "title": "API stream", "parent": "APP", "owner": "api-lead"},
+    {"id": "UI", "title": "UI stream", "parent": "APP", "owner": "ui-lead"},
+    {"id": "OPS", "title": "Operations", "owner": "ops-lead"}
+  ],
+  "tasks": [
+    {
+      "id": "A1", "title": "impl: API schema", "kind": "impl",
+      "owner": "api-dev", "project": "API", "state": "queued",
+      "deps": [], "attempts": []
+    },
+    {
+      "id": "A2", "title": "review: API", "kind": "review",
+      "owner": "api-review", "project": "API", "state": "queued",
+      "deps": ["A1"], "attempts": []
+    },
+    {
+      "id": "U1", "title": "impl: UI", "kind": "impl",
+      "owner": "ui-dev", "project": "UI", "state": "queued",
+      "deps": ["A1"], "attempts": []
+    },
+    {
+      "id": "APP-G", "title": "gate: application ready", "kind": "gate",
+      "owner": "lead", "project": "APP", "state": "queued",
+      "criteria": "API and UI reviews are clean",
+      "deps": ["A2", "U1"], "attempts": []
+    },
+    {
+      "id": "O1", "title": "impl: deployment", "kind": "impl",
+      "owner": "ops-dev", "project": "OPS", "state": "queued",
+      "deps": [], "attempts": []
+    },
+    {
+      "id": "SHIP", "title": "gate: ship", "kind": "gate",
+      "owner": "lead", "state": "queued",
+      "criteria": "application and operations are ready",
+      "deps": ["APP-G", "O1"], "attempts": []
+    }
+  ],
+  "events": [
+    {
+      "at": "2026-08-17T09:19:00Z",
+      "type": "message_resolved",
+      "task": "APP-G",
+      "message_id": "msg-0123456789abcdef",
+      "detail": "recommended keeping the gate at APP after independent architecture review"
+    }
+  ]
+}

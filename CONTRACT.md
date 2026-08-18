@@ -1,21 +1,24 @@
-# The dagr run-state contract — v1
+# The dagr run-state contract — v2
 
-> **Status: FROZEN v1 (2026-08-14).** The object model (§§1–8) is the union
+> **Status: v2 (2026-08-17), with v1 read compatibility.** The v1 object
+> model (§§1–8) remains valid; v2 adds recursive projects, scope-correct gate
+> placement, an orchestrator locator, and correlated operator messages. It is the union
 > of the requirements produced by a field survey of existing orchestration
 > surfaces and by first-hand study of real multi-agent sessions, and each
-> item cites why it exists; the field-level encoding is the Schema v1
+> item cites why it exists; the field-level encoding is the Schema v2
 > section below, enforced by `dagr check` and exercised by
 > [`samples/run.json`](samples/run.json)
 > — which encodes the full reference scene (executed loop,
-> typed futures, fan-in gate, live review) as data. Changes require a
-> version bump (`"dagr": 2`) and a migration note here. `dagr` renders
+> typed futures, fan-in gate, live review) as data. Existing `"dagr": 1`
+> documents remain accepted and need no migration; the run is simply their
+> only project scope. `dagr` renders
 > exactly this contract and nothing else: if a fact isn't in the contract,
 > the renderer must not invent it.
 
 ## Design stance
 
 `dagr` is a **representation kernel, not an enforcement kernel**. It carries
-no fencing, no CAS, no capabilities, no durable mail. The producer (a file
+no fencing, no CAS, no capabilities, and no scheduler/action engine. The producer (a file
 written by hand, an orchestrator, eventually a ledger daemon) owns authority
 and settlement. The contract's job is to make the true shape of the run
 *expressible* — the two gaps found across every orchestration surface
@@ -32,12 +35,27 @@ Corollaries:
 
 ## Object model
 
+### 0. Project — the recursive visual scope
+
+The run is the implicit root project. Optional `projects[]` add named
+recursive scopes with `id`, `title`, optional `parent`, `owner`, and `note`.
+A task has at most one visual home through `task.project`; phases and
+workstreams are not separate entities, just projects with a parent. A task
+that affects two projects is not duplicated: it lives once, and its
+dependency edges cross project boundaries visibly.
+
+Project hierarchy answers “where is this shown?”; task dependencies answer
+“what does this block?”. They are deliberately orthogonal. A cross-project
+dependency is rendered as an off-tree `⇠` edge, not as false visual
+containment. Project headings summarize attention in their descendants.
+
 ### 1. Task — the work item
 
 Stable identity, independent of any attempt at it.
 
 - `id` — producer-scoped stable ID (never a pane ID).
 - `title`, `owner` (current), `kind` (impl / review / gate / question / …).
+- `project` — optional visual home (§0); omitted means the run root.
 - `state` — projection over its attempts: `queued · working · review ·
   blocked · done · failed · rejected · settled_unverified`.
 - `deps` — see §3.
@@ -95,6 +113,13 @@ attempt is blocked first.
 - **Fan-in sets are first-class**: a gate's `inputs` carry per-input live
   state so the gate row can render `●◎●→⋈ G2` and name its blocker
   (`waits L5`).
+- **Gates are milestones, not lane children.** A gate with `project` is drawn
+  at that project. Without one, its scope is the nearest project shared by
+  all inputs; inputs from unrelated top-level projects place it at the run
+  root. An input's attempt history never changes this placement. The gate
+  row is a boundary with a state-bearing `N→1 ⋈` join; selecting it reveals
+  exact inputs. A retry may follow an earlier attempt of the same gate, but
+  a gate never inherits ownership from whichever input ran last.
 - **Promotion is an event, not an inference**: the producer emits a
   `promoted` event naming the `task` when a fan-in completes (v1 carries
   the completing gate in `detail`; a typed `by_completion_of` field is a
@@ -160,11 +185,62 @@ Append-only `events`: attempt transitions, promotions, directives, with
 timestamps and actors. Powers the focus-card provenance tail ("why does this
 hold attention") and makes "why does a3 exist" answerable on screen.
 
-### 9. Actions — producer-declared, confirm-gated (optional extension)
+### 9. Operator messages — contextual, durable, orchestrator-owned
 
-An optional top-level `actions` block maps verbs to **argv templates**
+`m` opens one editable composer targeted at the selected task/gate. dagr
+ships three prompt starters—Use judgment, Get guidance, Snooze—but they are
+only editable text plus a default authority. `Tab` changes starter and
+`ctrl-t` changes authority independently:
+
+- `recommend` / “return to me”: gather or think, then return a recommendation.
+- `decide` / “may decide + continue”: the orchestrator may choose and proceed
+  within the run's existing scope. It grants no broader authority.
+
+The operator can freely add model names, thinking levels, independent-review
+instructions, or any other prose. dagr never interprets it. The optional
+file next to the run, `actions.json`, has this no-code shape:
+
+```json
+{
+  "version": 1,
+  "include_defaults": true,
+  "actions": [
+    {"id": "security-council", "label": "Security council",
+     "prompt": "Ask two independent security reviewers and synthesize.",
+     "authority": "recommend"}
+  ]
+}
+```
+
+Config version `1` is the supported shape. An id matching a built-in replaces
+it; `include_defaults: false` starts from an empty set. The pane shows at most
+nine starters and surfaces invalid/unsupported configuration in its banner
+instead of silently changing behavior. Labels are capped at 80 bytes and each
+editable prompt at 32 KiB.
+
+The run declares `run.orchestrator {pane, agent}`. On Enter, dagr first
+appends the immutable raw message to adjacent `messages.jsonl`, including
+message id, run/revision, target, authority, text, and destination. Only then
+does it call Herdr's native queued-input API (`agent.prompt`). Delivery or
+failure is a second append-only record. A new journal is owner-only (`0600`
+on Unix); it contains operator prose and should be treated as run data, not
+committed casually. Reads are filtered by `run.id`, so sibling run files may
+share the directory without showing each other's messages. There is no dagr polling engine:
+monitor processes, background work, cron, agent selection, synthesis, and
+execution remain the orchestrator's job.
+
+The orchestrator correlates the eventual result by appending an event with
+`message_id` (or `source_messages[]` when several messages informed it).
+`message_resolved` requires a task, message id, and resolution detail;
+ordinary `directive` events may also carry those correlations. The focus
+card shows recorded/delivered/resolved state and the exact text, so a custom
+instruction does not disappear after submission.
+
+### 10. Legacy CLI actions — producer-declared, confirm-gated
+
+For backward compatibility, an optional top-level `actions` block maps verbs to **argv templates**
 naming the producer's own CLI. This is the only mutating surface the pane
-has, and it mutates nothing itself: `dagr` runs the producer's command and
+has. It mutates nothing itself: `dagr` runs the producer's command and
 renders whatever the producer then writes. Documents without the block are
 unaffected (it is additive within v1; validators that predate it ignore
 it — findings for it fire only when it is present).
@@ -223,27 +299,32 @@ it — findings for it fire only when it is present).
   producer's next write; `dagr` renders no local state change, ever.
 - The verb set is open; unknown verbs are declared-but-unbound (W211).
 
-## Transport (v1)
+## Transport
 
 A single JSON document read from a path; watch = mtime poll or
-producer-touched signal file. The daemon/socket transport is out of scope
-for v1's object model and must not leak into it. Canonical sample:
+producer-touched signal file. Herdr is used only for locator hints, focus,
+and queued operator messages; it never supplies task truth. Canonical sample:
 [`samples/run.json`](samples/run.json). (Earlier design studies used a
 legacy flat shape that predates this contract; it is not part of v1.)
 
-## Schema v1 — field reference
+## Schema v2 — field reference
 
-Top level: `dagr` (int, must be `1`) · `run {id*, title, started_at}` ·
-`generated_at` (staleness anchor) · `tasks[]*` · `events[]` ·
-`actions {verb → {argv[]*}}` (optional, §9).
+Top level: `dagr` (int, `1|2`; producers should write `2`) ·
+`run {id*, title, started_at, orchestrator {pane, agent}}` ·
+`generated_at` (staleness anchor) · `projects[]` · `tasks[]*` · `events[]` ·
+`actions {verb → {argv[]*}}` (legacy optional surface, §10).
 All timestamps ISO-8601. Unknown fields are ignored (forward compat).
 `*` = required.
 
+**Project** — `id*` (unique) · `title*` · `parent` (another project id;
+omit for a run-root child) · `owner` · `note`. Parent edges must be acyclic.
+
 **Task** — `id*` (unique, producer-scoped) · `title*` · `kind*`
 (`impl|review|test|gate|question|docs|ship|…` — open set) · `owner` ·
+`project` (visual home; omitted = run root) ·
 `state*` (`queued|working|review|blocked|done|failed|rejected|
 settled_unverified`) · `deps[]` (task ids) · `inputs[]` (gates: fan-in set,
-defaults to `deps`) · `unblock` (blocked: who) · `note` · `policy` ·
+defaults to `deps`) · `unblock` (blocked: who) · `note` · `criteria` · `policy` ·
 `attempts[]`.
 
 **Attempt** — `id*` (globally unique, `T·aN` style) · `n*` (1-based, unique
@@ -265,14 +346,23 @@ title, actor, model, attribution: planned|predicted}` (rendered `○`, or
 (chains onto another future node id) · `source` (rule provenance).
 
 **Event** — `at*` · `type*` (`attempt_started|attempt_settled|promoted|
-directive|note`) · `task`/`attempt` refs · `actor` · directives add
-`verb (reject|unblock|answer|rule)` + `by` · `detail`. Append-only,
+directive|message_resolved|note`) · `task`/`attempt` refs · `actor` · directives add
+`verb (reject|unblock|answer|rule)` + `by` · `detail` · optional
+`message_id` / `source_messages[]` correlations. `message_resolved` requires
+`task`, `message_id`, and `detail`. Append-only,
 ascending time.
+
+**v1 migration:** none required. A v1 document has no named project scopes
+or orchestrator message target. It receives corrected scope-level gate
+placement immediately; add `"dagr": 2`, `run.orchestrator`, projects, and
+task homes only when those features are wanted.
 
 ## dagr check — findings
 
 Errors (exit 1): E001 not-a-document/parse · E100 version · E101 run.id ·
-E102 tasks missing · E110/E130 duplicate task/attempt id · E111/E131
+E102 tasks missing · E103 empty orchestrator locator · E104 duplicate/malformed
+project · E105 unknown project parent · E106 project cycle · E107 task names
+unknown project · E108 gate project excludes an input scope · E110/E130 duplicate task/attempt id · E111/E131
 missing required fields · E112/E132 unknown state · E120/E121 dangling
 dep/input · E122 dependency cycle over `deps` ∪ gate `inputs` (a run is
 a DAG, and a fan-in override cannot smuggle a cycle past it) · E113 attempt id

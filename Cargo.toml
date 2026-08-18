@@ -1,8 +1,8 @@
 [package]
 name = "dagr"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
-description = "Your agent swarm as a live DAG: herdr plugin with check/view/stats over a frozen run-state contract."
+description = "Your agent swarm as a live DAG: herdr plugin with check/view/stats over a typed run-state contract."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aemrebarut/herdr-dagr"
 readme = "README.md"

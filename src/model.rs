@@ -5,7 +5,7 @@
 //! dotted futures from declared policy, join strips from gate inputs.
 //! The renderer invents nothing (CONTRACT.md, non-goals).
 
-use crate::contract::{Attempt, Doc, Task};
+use crate::contract::{Attempt, Doc, Project, Task};
 use crate::herdr::Hints;
 use crate::style::{self, Style};
 
@@ -40,6 +40,10 @@ pub struct Row {
     pub lit: bool,
     pub tag: Option<String>,
     pub state: String,
+    /// A synthetic recursive-project heading rather than a task/attempt.
+    pub project: bool,
+    /// A gate milestone: render as a scope boundary, not an ordinary leaf.
+    pub milestone: bool,
     /// Row key of the parent row in the walk (`None` for roots) — ← jumps here.
     pub parent: Option<String>,
     /// The walk put child rows under this one (foldable / zoomable).
@@ -55,11 +59,10 @@ pub struct GateJoin {
     pub states: Vec<String>,
 }
 
-/// The chip a folded row carries: how much is hidden, and any attention
-/// states inside — folding compresses history, it must not hide an alarm.
+/// The composition a folded aggregate carries — folding compresses history,
+/// it must not hide an alarm.
 #[derive(Clone)]
 pub struct FoldChip {
-    pub hidden: usize,
     /// Strongest attention color inside the fold (compact rows tint the
     /// ▸ marker with it).
     pub hot: Option<u8>,
@@ -89,6 +92,8 @@ impl Row {
             lit: false,
             tag: None,
             state: state.into(),
+            project: false,
+            milestone: false,
             parent: None,
             has_kids: false,
             fold: None,
@@ -242,7 +247,9 @@ enum NodeRef {
 
 struct Ix<'a> {
     tasks: &'a [Task],
+    projects: &'a [Project],
     task_by_id: std::collections::HashMap<&'a str, usize>,
+    project_by_id: std::collections::HashMap<&'a str, usize>,
     attempt_by_id: std::collections::HashMap<&'a str, (usize, usize)>,
     /// attempt order per task, sorted by n
     order: Vec<Vec<usize>>,
@@ -251,7 +258,9 @@ struct Ix<'a> {
 impl<'a> Ix<'a> {
     fn new(doc: &'a Doc) -> Self {
         let tasks: &[Task] = doc.tasks.as_deref().unwrap_or(&[]);
+        let projects = doc.projects.as_slice();
         let mut task_by_id = std::collections::HashMap::new();
+        let mut project_by_id = std::collections::HashMap::new();
         let mut attempt_by_id = std::collections::HashMap::new();
         let mut order = Vec::new();
         for (ti, t) in tasks.iter().enumerate() {
@@ -267,7 +276,105 @@ impl<'a> Ix<'a> {
             }
             order.push(idx);
         }
-        Ix { tasks, task_by_id, attempt_by_id, order }
+        for (pi, p) in projects.iter().enumerate() {
+            if let Some(id) = p.id.as_deref() {
+                project_by_id.entry(id).or_insert(pi);
+            }
+        }
+        Ix { tasks, projects, task_by_id, project_by_id, attempt_by_id, order }
+    }
+
+    fn task_index(&self, n: NodeRef) -> usize {
+        match n {
+            NodeRef::A(ti, _) | NodeRef::T(ti) => ti,
+        }
+    }
+
+    fn project_parent(&self, pi: usize) -> Option<usize> {
+        self.projects
+            .get(pi)
+            .and_then(|p| p.parent.as_deref())
+            .and_then(|id| self.project_by_id.get(id).copied())
+    }
+
+    /// Nearest shared project; `None` is the run/root project.
+    fn project_lca(&self, a: Option<usize>, b: Option<usize>) -> Option<usize> {
+        let (Some(a), Some(b)) = (a, b) else { return None };
+        let mut ancestors = std::collections::HashSet::new();
+        let mut cur = Some(a);
+        while let Some(pi) = cur {
+            if !ancestors.insert(pi) {
+                break;
+            }
+            cur = self.project_parent(pi);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = Some(b);
+        while let Some(pi) = cur {
+            if !seen.insert(pi) {
+                return None;
+            }
+            if ancestors.contains(&pi) {
+                return Some(pi);
+            }
+            cur = self.project_parent(pi);
+        }
+        None
+    }
+
+    /// A task has one visual home. A gate without an explicit home lives at
+    /// the nearest project shared by every input (the run root if streams
+    /// cross top-level projects).
+    fn task_project(&self, ti: usize) -> Option<usize> {
+        self.task_project_guarded(ti, &mut std::collections::HashSet::new())
+    }
+
+    fn task_project_guarded(
+        &self,
+        ti: usize,
+        resolving: &mut std::collections::HashSet<usize>,
+    ) -> Option<usize> {
+        let task = self.tasks.get(ti)?;
+        if let Some(pi) = task
+            .project
+            .as_deref()
+            .and_then(|id| self.project_by_id.get(id).copied())
+        {
+            return Some(pi);
+        }
+        if task.kind.as_deref() != Some("gate") || !resolving.insert(ti) {
+            return None;
+        }
+        let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
+        let mut scopes = inputs.iter().filter_map(|id| self.task_by_id.get(id.as_str()).copied());
+        let scope = scopes
+            .next()
+            .and_then(|first| {
+                scopes.fold(self.task_project_guarded(first, resolving), |common, input| {
+                    self.project_lca(common, self.task_project_guarded(input, resolving))
+                })
+            });
+        resolving.remove(&ti);
+        scope
+    }
+
+    fn same_project(&self, a: usize, b: usize) -> bool {
+        self.task_project(a) == self.task_project(b)
+    }
+
+    fn project_is_within(&self, child: Option<usize>, ancestor: usize) -> bool {
+        let mut cur = child;
+        let mut seen = std::collections::HashSet::new();
+        while let Some(pi) = cur {
+            if pi == ancestor {
+                return true;
+            }
+            if !seen.insert(pi) {
+                break;
+            }
+            cur = self.project_parent(pi);
+        }
+        false
     }
 
     fn attempt(&self, n: NodeRef) -> Option<&'a Attempt> {
@@ -345,53 +452,15 @@ impl<'a> Ix<'a> {
         }
     }
 
-    /// A gate with live history hangs from the latest-started input, which
-    /// preserves the executed trace. Before any input has run, attach it to
-    /// the deepest ancestor shared by every input spine: the gate is then a
-    /// sibling *after* the lanes it joins, not nested inside the first lane.
-    fn gate_parent(
-        &self,
-        gate: NodeRef,
-        task: &Task,
-        resolving: &mut std::collections::HashSet<NodeRef>,
-    ) -> Option<NodeRef> {
-        let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
-        let mut best: Option<(i64, String, NodeRef)> = None;
-        let mut stubs: Vec<NodeRef> = Vec::new();
-        for input in inputs {
-            let Some(&ti) = self.task_by_id.get(input.as_str()) else { continue };
-            match self.latest_attempt(ti) {
-                Some(n) => {
-                    let cand = (self.start_of(n), self.key_of(n), n);
-                    if best.as_ref().map(|b| (cand.0, &cand.1) > (b.0, &b.1)).unwrap_or(true) {
-                        best = Some(cand);
-                    }
-                }
-                None => stubs.push(NodeRef::T(ti)),
-            }
-        }
-        if let Some((_, _, n)) = best {
-            return Some(n);
-        }
-        let (first, rest) = stubs.split_first()?;
-        let first_chain = self.ancestor_chain(*first, resolving);
-        let other_chains: Vec<std::collections::HashSet<NodeRef>> = rest
-            .iter()
-            .map(|&n| self.ancestor_chain(n, resolving).into_iter().collect())
-            .collect();
-        first_chain
-            .into_iter()
-            .find(|&n| n != gate && other_chains.iter().all(|chain| chain.contains(&n)))
-    }
-
-    /// Parent node: cause chain first, then fan-in (gates), then primary dep.
+    /// Parent node: cause chain first, then primary dep. Gates are scope
+    /// milestones, never children of an arbitrary input. Their own retry
+    /// attempts may still follow earlier attempts of the same gate.
     fn parent(&self, n: NodeRef) -> Option<NodeRef> {
         self.parent_guarded(n, &mut std::collections::HashSet::new())
     }
 
-    /// Parent resolution can recurse while finding the shared ancestor of
-    /// nested all-stub gates. Keep that recursion cycle-safe even for a
-    /// malformed document that the validator will reject.
+    /// Parent resolution is cycle-safe even for a malformed document that
+    /// the validator will reject.
     fn parent_guarded(
         &self,
         n: NodeRef,
@@ -408,63 +477,51 @@ impl<'a> Ix<'a> {
     fn parent_inner(
         &self,
         n: NodeRef,
-        resolving: &mut std::collections::HashSet<NodeRef>,
+        _resolving: &mut std::collections::HashSet<NodeRef>,
     ) -> Option<NodeRef> {
         let task = self.task_of(n);
+        let this_ti = self.task_index(n);
         let is_gate = task.kind.as_deref() == Some("gate");
         if let Some(a) = self.attempt(n) {
             if let Some(cause) = &a.cause {
                 if let Some(r) = cause.reference.as_deref() {
                     if let Some(&(ti, ai)) = self.attempt_by_id.get(r) {
-                        return Some(NodeRef::A(ti, ai));
+                        if self.same_project(this_ti, ti) && (!is_gate || ti == this_ti) {
+                            return Some(NodeRef::A(ti, ai));
+                        }
                     }
                     if let Some(&ti) = self.task_by_id.get(r) {
-                        return self.latest_attempt(ti);
+                        if self.same_project(this_ti, ti) && (!is_gate || ti == this_ti) {
+                            return self.latest_attempt(ti);
+                        }
                     }
                 }
             }
             if is_gate {
-                return self.gate_parent(n, task, resolving);
+                return None;
             }
             let started = a.started_at.as_deref().and_then(parse_min);
             if let Some(dep) = task.deps.first() {
                 if let Some(&ti) = self.task_by_id.get(dep.as_str()) {
-                    return self.dep_attempt_at(ti, started);
+                    if self.same_project(this_ti, ti) {
+                        return self.dep_attempt_at(ti, started);
+                    }
                 }
             }
             return None;
         }
         // task stub
         if is_gate {
-            return self.gate_parent(n, task, resolving);
+            return None;
         }
         if let Some(dep) = task.deps.first() {
             if let Some(&ti) = self.task_by_id.get(dep.as_str()) {
-                return self.latest_attempt(ti).or(Some(NodeRef::T(ti)));
+                if self.same_project(this_ti, ti) {
+                    return self.latest_attempt(ti).or(Some(NodeRef::T(ti)));
+                }
             }
         }
         None
-    }
-
-    /// Node plus its rendered ancestors, nearest first. The local guard
-    /// bounds ordinary dependency cycles; `resolving` guards recursive
-    /// all-stub gate placement.
-    fn ancestor_chain(
-        &self,
-        start: NodeRef,
-        resolving: &mut std::collections::HashSet<NodeRef>,
-    ) -> Vec<NodeRef> {
-        let mut chain = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        let mut cur = Some(start);
-        while let Some(n) = cur {
-            if resolving.contains(&n) || !seen.insert(n) {
-                break;
-            }
-            chain.push(n);
-            cur = self.parent_guarded(n, resolving);
-        }
-        chain
     }
 }
 
@@ -533,19 +590,21 @@ fn effective_state(ix: &Ix, n: NodeRef) -> String {
     }
 }
 
-/// alarms: [blocked, lost, review, settled_unverified, working]
-fn fold_chip(hidden: usize, alarms: &[usize; 5]) -> FoldChip {
-    let mut segs = vec![
-        Seg("▸ ".into(), Style::bold(style::ACCENT)),
-        Seg(format!("{hidden} hidden"), Style::dim(style::MUTED)),
-    ];
+/// states: [blocked, lost, review, settled_unverified, working, queued,
+/// failed/rejected, done]. The aggregate row names the total; these are the
+/// composition, not a second rendering of the folded root task.
+fn fold_chip(states: &[usize; 8]) -> FoldChip {
+    let mut segs = Vec::new();
     let mut hot = None;
     let cats = [
-        ("blocked", alarms[0]),
-        ("lost", alarms[1]),
-        ("review", alarms[2]),
-        ("settled_unverified", alarms[3]),
-        ("working", alarms[4]),
+        ("blocked", states[0]),
+        ("lost", states[1]),
+        ("review", states[2]),
+        ("settled_unverified", states[3]),
+        ("working", states[4]),
+        ("queued", states[5]),
+        ("failed", states[6]),
+        ("done", states[7]),
     ];
     for (state, count) in cats {
         if count == 0 {
@@ -553,8 +612,8 @@ fn fold_chip(hidden: usize, alarms: &[usize; 5]) -> FoldChip {
         }
         let col = style::state_color(state);
         let label = if state == "settled_unverified" { "unverified" } else { state };
-        // working is activity, not an alarm — it shows, but dim
-        let live = state != "working";
+        // activity/settled categories show but do not make the fold an alarm
+        let live = matches!(state, "blocked" | "lost" | "review" | "settled_unverified" | "failed");
         if live && hot.is_none() {
             hot = Some(col);
         }
@@ -563,7 +622,7 @@ fn fold_chip(hidden: usize, alarms: &[usize; 5]) -> FoldChip {
             if live { Style::bold(col) } else { Style::dim(col) },
         ));
     }
-    FoldChip { hidden, hot, segs }
+    FoldChip { hot, segs }
 }
 
 /// Row keys of the topmost all-settled subtrees — branches where the node
@@ -611,7 +670,7 @@ pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     while let Some(n) = cur {
-        if !seen.insert(n) || out.len() > 64 {
+        if !seen.insert(n) {
             break;
         }
         match ix.parent(n) {
@@ -639,6 +698,91 @@ pub fn row_matches(r: &Row, q: &str) -> bool {
     [&r.key, &r.name, &r.title, &r.agent, &r.task_id]
         .into_iter()
         .any(|s| s.to_lowercase().contains(&q))
+}
+
+fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
+    let project = &ix.projects[pi];
+    let id = project.id.as_deref().unwrap_or("?");
+    let mut row = Row::blank(&format!("project:{id}"), "", "queued");
+    row.project = true;
+    row.rail = "  ".repeat(depth);
+    row.glyph = '▾';
+    row.name = id.to_string();
+    row.title = project.title.clone().unwrap_or_default();
+    row.agent = project.owner.clone().unwrap_or_default();
+    row.chips = project
+        .note
+        .as_deref()
+        .map(|n| vec![Seg(format!("{n} "), Style::dim(style::MUTED))])
+        .unwrap_or_default();
+
+    // Match the fold aggregate's vocabulary. A project summary is where a
+    // collapsed organizational scope reports its health, so it must not
+    // turn failures, lost attempts, or unverified settlements into the
+    // reassuring word "settled".
+    let mut counts = [0usize; 8]; // blocked, lost, review, unverified, working, queued, failed, done
+    for ti in 0..ix.tasks.len() {
+        if !ix.project_is_within(ix.task_project(ti), pi) {
+            continue;
+        }
+        let node = ix.latest_attempt(ti).unwrap_or(NodeRef::T(ti));
+        match effective_state(ix, node).as_str() {
+            "blocked" => counts[0] += 1,
+            "lost" => counts[1] += 1,
+            "review" => counts[2] += 1,
+            "settled_unverified" => counts[3] += 1,
+            "working" => counts[4] += 1,
+            "queued" => counts[5] += 1,
+            "failed" | "rejected" => counts[6] += 1,
+            _ => counts[7] += 1,
+        }
+    }
+    let specs = [
+        (0, "blocked", style::BLOCKED),
+        (1, "lost", style::BLOCKED),
+        (2, "review", style::REVIEW),
+        (3, "unverified", style::EV_HEURISTIC),
+        (4, "working", style::WORKING),
+        (5, "queued", style::QUEUED),
+        (6, "failed", style::FAILED),
+        (7, "done", style::DONE),
+    ];
+    for (idx, label, color) in specs {
+        if counts[idx] > 0 {
+            if !row.status.is_empty() {
+                row.status.push(Seg(" · ".into(), Style::dim(style::MUTED)));
+            }
+            row.status.push(Seg(
+                format!("{} {label}", counts[idx]),
+                if matches!(idx, 0 | 1 | 2 | 3 | 6) {
+                    Style::bold(color)
+                } else {
+                    Style::dim(color)
+                },
+            ));
+        }
+    }
+    let strongest = if counts[0] > 0 {
+        "blocked"
+    } else if counts[1] > 0 {
+        "lost"
+    } else if counts[2] > 0 {
+        "review"
+    } else if counts[3] > 0 {
+        "settled_unverified"
+    } else if counts[6] > 0 {
+        "failed"
+    } else if counts[4] > 0 {
+        "working"
+    } else if counts[5] > 0 {
+        "queued"
+    } else {
+        "done"
+    };
+    row.state = strongest.into();
+    row.glyph_color = style::state_color(strongest);
+    row.hot = matches!(strongest, "blocked" | "lost" | "review" | "settled_unverified" | "failed");
+    row
 }
 
 /// `flow_chip` is the precomputed `stats::header_chip` for this doc —
@@ -711,7 +855,7 @@ pub fn build(
     let zoom_node = opts.zoom.and_then(|z| all.iter().copied().find(|&n| ix.key_of(n) == z));
     let walk_roots: Vec<NodeRef> = match zoom_node {
         Some(n) => vec![n],
-        None => roots,
+        None => roots.clone(),
     };
 
     let no_folds = std::collections::HashSet::new();
@@ -740,21 +884,26 @@ pub fn build(
         }
         /// Mark a folded-away subtree as covered while tallying what the
         /// fold hides — count and attention states, for the ▸ chip.
-        fn consume(&mut self, n: NodeRef, hidden: &mut usize, alarms: &mut [usize; 5]) {
+        fn tally(state: &str, states: &mut [usize; 8]) {
+            match state {
+                "blocked" => states[0] += 1,
+                "lost" => states[1] += 1,
+                "review" => states[2] += 1,
+                "settled_unverified" => states[3] += 1,
+                "working" => states[4] += 1,
+                "queued" => states[5] += 1,
+                "failed" | "rejected" => states[6] += 1,
+                _ => states[7] += 1,
+            }
+        }
+        fn consume(&mut self, n: NodeRef, hidden: &mut usize, states: &mut [usize; 8]) {
             for k in self.children[self.pos(n)].clone() {
                 if !self.covered.insert(self.ix.key_of(k)) {
                     continue;
                 }
                 *hidden += 1;
-                match effective_state(self.ix, k).as_str() {
-                    "blocked" => alarms[0] += 1,
-                    "lost" => alarms[1] += 1,
-                    "review" => alarms[2] += 1,
-                    "settled_unverified" => alarms[3] += 1,
-                    "working" => alarms[4] += 1,
-                    _ => {}
-                }
-                self.consume(k, hidden, alarms);
+                Self::tally(&effective_state(self.ix, k), states);
+                self.consume(k, hidden, states);
             }
         }
         fn walk(&mut self, n: NodeRef, prefix: &str, is_root: bool, is_last: bool, parent: Option<&str>) {
@@ -800,10 +949,25 @@ pub fn build(
             // alarm visible — a fold must never hide a blocked row silently
             if !kids.is_empty() && self.folded.contains(&key) {
                 let mut hidden = 0usize;
-                let mut alarms = [0usize; 5];
-                self.consume(n, &mut hidden, &mut alarms);
-                self.rows.last_mut().expect("row just pushed").fold =
-                    Some(fold_chip(hidden, &alarms));
+                let mut states = [0usize; 8];
+                Self::tally(&effective_state(self.ix, n), &mut states);
+                self.consume(n, &mut hidden, &mut states);
+                let row = self.rows.last_mut().expect("row just pushed");
+                let origin = row.name.clone();
+                let chip = fold_chip(&states);
+                row.glyph = '▸';
+                row.glyph_color = chip.hot.unwrap_or(style::ACCENT);
+                row.hot = chip.hot.is_some();
+                row.name = format!("{} items", hidden + 1);
+                row.title = format!("folded branch · from {origin}");
+                row.title_dim = false;
+                row.join = None;
+                row.chips.clear();
+                row.model.clear();
+                row.agent.clear();
+                row.status = vec![Seg("folded".into(), Style::dim(style::MUTED))];
+                row.milestone = false;
+                row.fold = Some(chip);
                 return;
             }
             let mut dotted: Vec<Row> = Vec::new();
@@ -837,6 +1001,32 @@ pub fn build(
             }
         }
     }
+
+    fn walk_project<'a, 'b>(
+        w: &mut Walker<'a, 'b>,
+        pi: usize,
+        depth: usize,
+        scoped: &std::collections::HashMap<Option<usize>, Vec<NodeRef>>,
+        project_children: &[Vec<usize>],
+    ) {
+        w.rows.push(project_row(w.ix, pi, depth));
+        let roots = scoped.get(&Some(pi)).cloned().unwrap_or_default();
+        let (mut ordinary, mut gates): (Vec<_>, Vec<_>) = roots
+            .into_iter()
+            .partition(|&n| w.ix.task_of(n).kind.as_deref() != Some("gate"));
+        let prefix = format!("{}  ", "  ".repeat(depth));
+        let ordinary_n = ordinary.len();
+        for (i, n) in ordinary.drain(..).enumerate() {
+            w.walk(n, &prefix, false, i + 1 == ordinary_n, None);
+        }
+        for &child in project_children.get(pi).map(Vec::as_slice).unwrap_or(&[]) {
+            walk_project(w, child, depth + 1, scoped, project_children);
+        }
+        let gates_n = gates.len();
+        for (i, n) in gates.drain(..).enumerate() {
+            w.walk(n, &prefix, false, i + 1 == gates_n, None);
+        }
+    }
     {
         let mut w = Walker {
             ix: &ix,
@@ -849,8 +1039,50 @@ pub fn build(
             folded,
             covered: &mut covered,
         };
-        for (i, &r) in walk_roots.iter().enumerate() {
-            w.walk(r, " ", true, i == walk_roots.len() - 1, None);
+        if zoom_node.is_some() {
+            for (i, &r) in walk_roots.iter().enumerate() {
+                w.walk(r, " ", true, i == walk_roots.len() - 1, None);
+            }
+        } else if ix.projects.is_empty() {
+            let (ordinary, gates): (Vec<_>, Vec<_>) = walk_roots
+                .iter()
+                .copied()
+                .partition(|&n| ix.task_of(n).kind.as_deref() != Some("gate"));
+            for (i, &r) in ordinary.iter().enumerate() {
+                w.walk(r, " ", true, i + 1 == ordinary.len(), None);
+            }
+            for (i, &r) in gates.iter().enumerate() {
+                w.walk(r, " ", true, i + 1 == gates.len(), None);
+            }
+        } else {
+            let mut scoped: std::collections::HashMap<Option<usize>, Vec<NodeRef>> =
+                std::collections::HashMap::new();
+            for &r in &roots {
+                scoped.entry(ix.task_project(ix.task_index(r))).or_default().push(r);
+            }
+            let mut project_children = vec![Vec::new(); ix.projects.len()];
+            let mut top_projects = Vec::new();
+            for pi in 0..ix.projects.len() {
+                match ix.project_parent(pi) {
+                    Some(parent) if parent < project_children.len() => {
+                        project_children[parent].push(pi)
+                    }
+                    _ => top_projects.push(pi),
+                }
+            }
+            let root_nodes = scoped.get(&None).cloned().unwrap_or_default();
+            let (ordinary, gates): (Vec<_>, Vec<_>) = root_nodes
+                .into_iter()
+                .partition(|&n| ix.task_of(n).kind.as_deref() != Some("gate"));
+            for (i, &r) in ordinary.iter().enumerate() {
+                w.walk(r, " ", true, i + 1 == ordinary.len(), None);
+            }
+            for pi in top_projects {
+                walk_project(&mut w, pi, 0, &scoped, &project_children);
+            }
+            for (i, &r) in gates.iter().enumerate() {
+                w.walk(r, " ", true, i + 1 == gates.len(), None);
+            }
         }
     }
     // Malformed graphs (parent cycles) leave nodes unreachable from any
@@ -1010,6 +1242,7 @@ fn node_row(
     row.selectable = true;
     row.name = ix.display_name(n);
     row.title = task.title.clone().unwrap_or_default();
+    row.milestone = kind == "gate";
 
     if let Some(a) = ix.attempt(n) {
         let st = a.state.as_deref().unwrap_or("queued");
@@ -1187,15 +1420,25 @@ fn node_row(
         NodeRef::A(..) => ix.attempt(n).map(|a| a.n.unwrap_or(1) <= 1).unwrap_or(true),
     };
     if first_row {
-        if kind != "gate" && task.deps.len() > 1 {
-            for d in &task.deps[1..] {
-                row.chips.push(Seg(format!("⇠ {d} "), Style::dim(style::MUTED)));
+        if kind != "gate" {
+            let this_ti = ix.task_index(n);
+            for (di, d) in task.deps.iter().enumerate() {
+                let cross_project = ix
+                    .task_by_id
+                    .get(d.as_str())
+                    .is_some_and(|&dep_ti| !ix.same_project(this_ti, dep_ti));
+                if di > 0 || cross_project {
+                    row.chips.push(Seg(format!("⇠ {d} "), Style::dim(style::MUTED)));
+                }
             }
         }
         if let Some(note) = task.note.as_deref() {
             // producers sometimes write the ⇠ themselves; one is enough
             let note = note.trim_start_matches("⇠ ");
             row.chips.push(Seg(format!("⇠ {note} "), Style::dim(style::MUTED)));
+        }
+        if let Some(criteria) = task.criteria.as_deref() {
+            row.chips.push(Seg(format!("✓ {criteria} "), Style::dim(style::MUTED)));
         }
     }
     row
@@ -1445,7 +1688,7 @@ mod tests {
             &ViewOpts { zoom: Some("A"), folded: Some(&fold_set) },
         );
         assert_eq!(keys(&folded_scene), ["A"]);
-        assert_eq!(folded_scene.rows[0].fold.as_ref().map(|f| f.hidden), Some(2));
+        assert_eq!(folded_scene.rows[0].name, "3 items");
     }
 
     #[test]
@@ -1464,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn all_stub_fanin_attaches_at_the_deepest_shared_ancestor() {
+    fn all_stub_fanin_is_a_scope_milestone_not_a_lane_child() {
         let doc = queued_tasks(serde_json::json!([
             {"id": "R", "title": "root", "state": "queued", "deps": [], "attempts": []},
             {"id": "A1", "title": "lane a plan", "state": "queued", "deps": ["R"], "attempts": []},
@@ -1479,7 +1722,8 @@ mod tests {
         let scene = build(&doc, None, None, None, &ViewOpts::default());
         assert_eq!(keys(&scene), ["R", "A1", "A2", "B1", "B2", "G", "OUT"]);
         let gate = scene.rows.iter().find(|r| r.key == "G").expect("gate row");
-        assert_eq!(gate.parent.as_deref(), Some("R"));
+        assert_eq!(gate.parent, None);
+        assert!(gate.milestone);
         assert_eq!(
             gate.join.as_ref().map(|j| j.states.as_slice()),
             Some(["queued".to_string(), "queued".to_string()].as_slice())
@@ -1507,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn all_stub_fanin_finds_a_shared_ancestor_beyond_many_retry_attempts() {
+    fn deep_retry_history_never_claims_ownership_of_a_gate() {
         let retries = |task: &str| {
             (1..=10)
                 .map(|n| {
@@ -1541,14 +1785,11 @@ mod tests {
         ]));
 
         let scene = build(&doc, None, None, None, &ViewOpts::default());
-        assert_eq!(
-            scene.rows.iter().find(|r| r.key == "G").unwrap().parent.as_deref(),
-            Some("R·a1")
-        );
+        assert_eq!(scene.rows.iter().find(|r| r.key == "G").unwrap().parent, None);
     }
 
     #[test]
-    fn attempted_fanin_keeps_latest_started_parent_selection() {
+    fn attempted_inputs_do_not_change_gate_placement() {
         let doc = queued_tasks(serde_json::json!([
             {"id": "A", "title": "a", "state": "done", "deps": [], "attempts": [
                 {"id": "A·a1", "n": 1, "state": "done", "started_at": "2026-08-16T10:00:00Z"}
@@ -1561,10 +1802,88 @@ mod tests {
         ]));
 
         let scene = build(&doc, None, None, None, &ViewOpts::default());
-        assert_eq!(
-            scene.rows.iter().find(|r| r.key == "G").unwrap().parent.as_deref(),
-            Some("B·a1")
-        );
+        assert_eq!(keys(&scene), ["A·a1", "B·a1", "G"]);
+        assert_eq!(scene.rows.iter().find(|r| r.key == "G").unwrap().parent, None);
+    }
+
+    #[test]
+    fn recursive_projects_place_local_shared_and_global_gates_at_their_scope() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "r", "title": "projects"},
+            "projects": [
+                {"id": "P", "title": "Product"},
+                {"id": "A", "title": "Stream A", "parent": "P"},
+                {"id": "B", "title": "Stream B", "parent": "P"},
+                {"id": "C", "title": "Independent"}
+            ],
+            "tasks": [
+                {"id": "A1", "title": "a", "project": "A", "state": "queued", "deps": [], "attempts": []},
+                {"id": "A2", "title": "a2", "project": "A", "state": "queued", "deps": ["A1"], "attempts": []},
+                {"id": "AG", "title": "local gate", "kind": "gate", "state": "queued", "deps": ["A1", "A2"], "attempts": []},
+                {"id": "B1", "title": "b", "project": "B", "state": "queued", "deps": [], "attempts": []},
+                {"id": "PG", "title": "product gate", "kind": "gate", "state": "queued", "deps": ["A2", "B1"], "attempts": []},
+                {"id": "C1", "title": "c", "project": "C", "state": "queued", "deps": [], "attempts": []},
+                {"id": "RG", "title": "run gate", "kind": "gate", "state": "queued", "deps": ["PG", "C1"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let pos = |key: &str| scene.rows.iter().position(|r| r.key == key).unwrap();
+        assert!(pos("project:A") < pos("AG"), "local gate stays in stream A");
+        assert!(pos("project:B") < pos("PG"), "shared gate follows both child streams");
+        assert!(pos("PG") < pos("project:C"), "product gate remains inside product project");
+        assert!(pos("project:C") < pos("RG"), "cross-project gate is a run-level milestone");
+        assert_eq!(scene.rows.iter().find(|r| r.key == "AG").unwrap().rail, "    ╰─");
+        assert_eq!(scene.rows.iter().find(|r| r.key == "PG").unwrap().rail, "  ╰─");
+        assert_eq!(scene.rows.iter().find(|r| r.key == "RG").unwrap().rail, " ");
+    }
+
+    #[test]
+    fn project_summary_does_not_hide_lost_failed_or_unverified_work() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "r"},
+            "projects": [{"id": "P", "title": "Product"}],
+            "tasks": [
+                {"id": "L", "title": "lost", "project": "P", "state": "failed", "deps": [],
+                 "attempts": [{"id": "L·a1", "n": 1, "state": "lost"}]},
+                {"id": "F", "title": "failed", "project": "P", "state": "failed", "deps": [], "attempts": []},
+                {"id": "U", "title": "unverified", "project": "P", "state": "settled_unverified", "deps": [],
+                 "attempts": [{"id": "U·a1", "n": 1, "state": "settled_unverified"}]},
+                {"id": "D", "title": "done", "project": "P", "state": "done", "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let project = scene.rows.iter().find(|r| r.key == "project:P").unwrap();
+        let status = project.status.iter().map(|seg| seg.0.as_str()).collect::<String>();
+        assert!(status.contains("1 lost"), "{status}");
+        assert!(status.contains("1 failed"), "{status}");
+        assert!(status.contains("1 unverified"), "{status}");
+        assert!(status.contains("1 done"), "{status}");
+        assert_eq!(project.state, "lost");
+        assert!(project.hot);
+    }
+
+    #[test]
+    fn cross_project_dependency_is_an_edge_chip_not_a_false_visual_home() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "r"},
+            "projects": [{"id": "A", "title": "A"}, {"id": "B", "title": "B"}],
+            "tasks": [
+                {"id": "A1", "title": "a", "project": "A", "state": "queued", "deps": [], "attempts": []},
+                {"id": "B1", "title": "b", "project": "B", "state": "queued", "deps": ["A1"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let b = scene.rows.iter().find(|r| r.key == "B1").unwrap();
+        assert_eq!(b.parent, None);
+        assert!(b.chips.iter().any(|s| s.0.contains("⇠ A1")));
     }
 
     #[test]
@@ -1623,12 +1942,14 @@ mod tests {
         let scene = build(&doc, None, None, None, &ViewOpts { zoom: None, folded: Some(&folded) });
         assert_eq!(keys(&scene), ["A·a1"], "fallback must not resurrect folded rows");
         let chip = scene.rows[0].fold.as_ref().expect("fold chip");
-        assert_eq!(chip.hidden, 3);
         // C's working attempt displays as BLOCKED (task state outranks) —
         // the chip must carry that, in blocked ink
         assert_eq!(chip.hot, Some(crate::style::BLOCKED));
         let text: String = chip.segs.iter().map(|Seg(s, _)| s.as_str()).collect();
-        assert!(text.contains("3 hidden") && text.contains("1 blocked"), "{text}");
+        assert_eq!(scene.rows[0].glyph, '▸');
+        assert_eq!(scene.rows[0].name, "4 items");
+        assert!(scene.rows[0].title.contains("from A"));
+        assert!(text.contains("1 blocked") && text.contains("3 done"), "{text}");
     }
 
     #[test]
@@ -1664,6 +1985,34 @@ mod tests {
         assert_eq!(ancestors(&doc, "D"), ["B·a1", "A·a1"]);
         assert_eq!(ancestors(&doc, "A·a1"), Vec::<String>::new());
         assert_eq!(ancestors(&doc, "nope"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ancestor_walk_is_bounded_by_identity_not_an_arbitrary_depth_cap() {
+        let attempts = (1..=80)
+            .map(|n| {
+                let mut attempt = serde_json::json!({
+                    "id": format!("A·a{n}"),
+                    "n": n,
+                    "state": "failed"
+                });
+                if n > 1 {
+                    attempt["cause"] = serde_json::json!({
+                        "type": "followup",
+                        "ref": format!("A·a{}", n - 1)
+                    });
+                }
+                attempt
+            })
+            .collect::<Vec<_>>();
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "many retries", "state": "failed", "deps": [], "attempts": attempts}
+        ]));
+
+        let chain = ancestors(&doc, "A·a80");
+        assert_eq!(chain.len(), 79);
+        assert_eq!(chain.first().map(String::as_str), Some("A·a79"));
+        assert_eq!(chain.last().map(String::as_str), Some("A·a1"));
     }
 
     #[test]
