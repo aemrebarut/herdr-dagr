@@ -393,7 +393,7 @@ impl<'a> Ix<'a> {
         }
         if let Some(dep) = task.deps.first() {
             if let Some(&ti) = self.task_by_id.get(dep.as_str()) {
-                return self.latest_attempt(ti);
+                return self.latest_attempt(ti).or(Some(NodeRef::T(ti)));
             }
         }
         None
@@ -643,8 +643,9 @@ pub fn build(
     let no_folds = std::collections::HashSet::new();
     let folded = opts.folded.unwrap_or(&no_folds);
     // every node the walk accounted for — emitted as a row OR hidden
-    // inside a fold — so the unreachable-node fallback below cannot
-    // resurrect folded work as flat rows
+    // inside a fold. This is also the cycle guard for malformed graphs,
+    // and keeps the unreachable-node fallback below from resurrecting
+    // folded work as flat rows.
     let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let mut rows: Vec<Row> = Vec::new();
@@ -667,7 +668,9 @@ pub fn build(
         /// fold hides — count and attention states, for the ▸ chip.
         fn consume(&mut self, n: NodeRef, hidden: &mut usize, alarms: &mut [usize; 5]) {
             for k in self.children[self.pos(n)].clone() {
-                self.covered.insert(self.ix.key_of(k));
+                if !self.covered.insert(self.ix.key_of(k)) {
+                    continue;
+                }
                 *hidden += 1;
                 match effective_state(self.ix, k).as_str() {
                     "blocked" => alarms[0] += 1,
@@ -681,6 +684,10 @@ pub fn build(
             }
         }
         fn walk(&mut self, n: NodeRef, prefix: &str, is_root: bool, is_last: bool, parent: Option<&str>) {
+            let key = self.ix.key_of(n);
+            if !self.covered.insert(key.clone()) {
+                return;
+            }
             let rail = if is_root {
                 " ".to_string()
             } else {
@@ -693,8 +700,6 @@ pub fn build(
                 .and_then(|c| c.cause_type.as_deref())
                 .map(|t| t == "sent_back" || t == "gate_failed")
                 .unwrap_or(false);
-            let key = self.ix.key_of(n);
-            self.covered.insert(key.clone());
             self.rows.push(node_row(self.ix, n, &rail, reentry, self.now_min, self.hints));
             self.rows.last_mut().expect("row just pushed").parent = parent.map(str::to_string);
 
@@ -882,8 +887,12 @@ pub fn build(
     // zoom is counted, never dropped silently
     let zoom = zoom_node.map(|zn| {
         let mut keep = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
         let mut stack = vec![zn];
         while let Some(n) = stack.pop() {
+            if !seen.insert(n) {
+                continue;
+            }
             if let Some(id) = ix.task_of(n).id.clone() {
                 keep.insert(id);
             }
@@ -1279,7 +1288,7 @@ mod tests {
                 {"id": "B", "title": "impl: b", "state": "done", "deps": ["A"],
                  "attempts": [{"id": "B·a1", "n": 1, "state": "done",
                                "started_at": "2026-08-16T10:20:00Z", "ended_at": "2026-08-16T10:30:00Z"}]},
-                {"id": "C", "title": "impl: c", "state": "blocked", "unblock": "emre", "deps": ["A"],
+                {"id": "C", "title": "impl: c", "state": "blocked", "unblock": "operator", "deps": ["A"],
                  "attempts": [{"id": "C·a1", "n": 1, "state": "working",
                                "started_at": "2026-08-16T10:25:00Z"}]},
                 {"id": "D", "title": "impl: d", "state": "done", "deps": ["B"], "attempts": []}
@@ -1287,6 +1296,15 @@ mod tests {
             }"#,
         )
         .expect("mini doc parses")
+    }
+
+    fn queued_tasks(tasks: serde_json::Value) -> Doc {
+        serde_json::from_value(serde_json::json!({
+            "dagr": 1,
+            "run": {"id": "r", "title": "queued"},
+            "tasks": tasks
+        }))
+        .expect("queued doc parses")
     }
 
     fn keys(scene: &Scene) -> Vec<&str> {
@@ -1304,6 +1322,76 @@ mod tests {
         assert_eq!(by_key("D").parent.as_deref(), Some("B·a1"));
         assert!(by_key("A·a1").has_kids && by_key("B·a1").has_kids);
         assert!(!by_key("D").has_kids);
+    }
+
+    #[test]
+    fn all_queued_dependencies_render_as_a_connected_spine() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "a", "state": "queued", "deps": [], "attempts": []},
+            {"id": "B", "title": "b", "state": "queued", "deps": ["A"], "attempts": []},
+            {"id": "C", "title": "c", "state": "queued", "deps": ["B"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["A", "B", "C"]);
+        assert_eq!(scene.rows.iter().map(|r| r.parent.as_deref()).collect::<Vec<_>>(), [
+            None,
+            Some("A"),
+            Some("B"),
+        ]);
+        assert_eq!(scene.rows.iter().map(|r| r.rail.as_str()).collect::<Vec<_>>(), [
+            " ",
+            " ╰─",
+            "   ╰─",
+        ]);
+    }
+
+    #[test]
+    fn cyclic_queued_dependencies_do_not_loop_in_full_zoomed_or_folded_walks() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "a", "state": "queued", "deps": ["C"], "attempts": []},
+            {"id": "B", "title": "b", "state": "queued", "deps": ["A"], "attempts": []},
+            {"id": "C", "title": "c", "state": "queued", "deps": ["B"], "attempts": []}
+        ]));
+
+        let full = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&full), ["A", "B", "C"], "rootless cycles fall back to flat rows");
+        assert_eq!(ancestors(&doc, "A"), ["C", "B", "A"], "ancestor walk stops at the cycle");
+
+        let zoomed = build(
+            &doc,
+            None,
+            None,
+            None,
+            &ViewOpts { zoom: Some("A"), folded: None },
+        );
+        assert_eq!(keys(&zoomed), ["A", "B", "C"], "zoomed cycle visits each node once");
+
+        let fold_set: std::collections::HashSet<String> = ["A".to_string()].into();
+        let folded_scene = build(
+            &doc,
+            None,
+            None,
+            None,
+            &ViewOpts { zoom: Some("A"), folded: Some(&fold_set) },
+        );
+        assert_eq!(keys(&folded_scene), ["A"]);
+        assert_eq!(folded_scene.rows[0].fold.as_ref().map(|f| f.hidden), Some(2));
+    }
+
+    #[test]
+    fn attempted_dependency_remains_the_parent_of_a_queued_stub() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "a", "state": "done", "deps": [], "attempts": [
+                {"id": "A·a1", "n": 1, "state": "done", "started_at": "2026-08-16T10:00:00Z"}
+            ]},
+            {"id": "B", "title": "b", "state": "queued", "deps": ["A"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["A·a1", "B"]);
+        assert_eq!(scene.rows[1].parent.as_deref(), Some("A·a1"));
+        assert_eq!(scene.rows[1].rail, " ╰─");
     }
 
     #[test]
