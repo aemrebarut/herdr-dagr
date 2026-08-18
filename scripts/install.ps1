@@ -7,11 +7,12 @@ $ErrorActionPreference = 'Stop'
 $Name = 'dagr'
 $Repo = 'aemrebarut/herdr-dagr'
 $Root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($Root.StartsWith('\\?\')) { $Root = $Root.Substring(4) }
 $BinDir = if ($env:DAGR_INSTALL_BIN_DIR) { $env:DAGR_INSTALL_BIN_DIR } else { Join-Path $Root 'bin' }
 $Manifest = Join-Path $Root 'herdr-plugin.toml'
 $VersionMatch = Select-String -Path $Manifest -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
 if (-not $VersionMatch) {
-    [Console]::Error.WriteLine("$Name: cannot read the plugin version")
+    [Console]::Error.WriteLine("${Name}: cannot read the plugin version")
     exit 1
 }
 $Version = $VersionMatch.Matches[0].Groups[1].Value
@@ -28,13 +29,13 @@ function Invoke-DagrFallback {
     param([string]$Reason)
     $Cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if ($Cargo) {
-        [Console]::Error.WriteLine("$Name: $Reason; building this source with Cargo")
+        [Console]::Error.WriteLine("${Name}: $Reason; building this source with Cargo")
         Clear-DagrTemp
         & (Join-Path $PSScriptRoot 'build.ps1')
         exit $LASTEXITCODE
     }
-    [Console]::Error.WriteLine("$Name: $Reason, and Cargo is not installed")
-    [Console]::Error.WriteLine("$Name: install the released revision, or install Rust to build this source")
+    [Console]::Error.WriteLine("${Name}: $Reason, and Cargo is not installed")
+    [Console]::Error.WriteLine("${Name}: install the released revision, or install Rust to build this source")
     Clear-DagrTemp
     exit 1
 }
@@ -108,7 +109,7 @@ if (-not $HeadCommit.Equals($ReleaseCommit, [System.StringComparison]::OrdinalIg
 
 $ArchivePath = Join-Path $script:TmpDir $Archive
 $ChecksumPath = Join-Path $script:TmpDir $Checksum
-[Console]::Out.WriteLine("$Name: downloading $Archive ($Tag)")
+[Console]::Out.WriteLine("${Name}: downloading $Archive ($Tag)")
 if (-not (Invoke-DagrDownload "$Base/$Archive" $ArchivePath) -or
     -not (Invoke-DagrDownload "$Base/$Checksum" $ChecksumPath)) {
     Invoke-DagrFallback "no prebuilt asset is available for $Tag"
@@ -117,13 +118,13 @@ if (-not (Invoke-DagrDownload "$Base/$Archive" $ArchivePath) -or
 $ChecksumLine = (Get-Content -LiteralPath $ChecksumPath | Select-Object -First 1)
 $Expected = if ($ChecksumLine) { ($ChecksumLine.Trim() -split '\s+')[0].ToLowerInvariant() } else { $null }
 if (-not $Expected -or $Expected -notmatch '^[0-9a-f]{64}$') {
-    [Console]::Error.WriteLine("$Name: malformed checksum asset $Checksum")
+    [Console]::Error.WriteLine("${Name}: malformed checksum asset $Checksum")
     Clear-DagrTemp
     exit 1
 }
 $Actual = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($Actual -ne $Expected) {
-    [Console]::Error.WriteLine("$Name: checksum mismatch (expected $Expected, got $Actual)")
+    [Console]::Error.WriteLine("${Name}: checksum mismatch (expected $Expected, got $Actual)")
     Clear-DagrTemp
     exit 1
 }
@@ -133,7 +134,7 @@ New-Item -ItemType Directory -Path $Unpack -Force | Out-Null
 Expand-Archive -LiteralPath $ArchivePath -DestinationPath $Unpack -Force
 $SourceBin = Join-Path $Unpack 'dagr.exe'
 if (-not (Test-Path -LiteralPath $SourceBin -PathType Leaf)) {
-    [Console]::Error.WriteLine("$Name: release archive does not contain dagr.exe")
+    [Console]::Error.WriteLine("${Name}: release archive does not contain dagr.exe")
     Clear-DagrTemp
     exit 1
 }
@@ -141,5 +142,5 @@ New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 $InstalledBin = Join-Path $BinDir 'dagr.exe'
 Copy-Item -LiteralPath $SourceBin -Destination $InstalledBin -Force
 Clear-DagrTemp
-[Console]::Out.WriteLine("$Name: installed $InstalledBin")
+[Console]::Out.WriteLine("${Name}: installed $InstalledBin")
 exit 0

@@ -3,6 +3,7 @@
 $ErrorActionPreference = 'Stop'
 
 $Root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+if ($Root.StartsWith('\\?\')) { $Root = $Root.Substring(4) }
 $Cargo = Get-Command cargo -ErrorAction SilentlyContinue
 if (-not $Cargo) {
     [Console]::Error.WriteLine('dagr: Cargo is required to build this source')

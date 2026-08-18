@@ -55,7 +55,13 @@ fn the_bundled_skill_is_the_shipped_file() {
     let out = Command::new(dagr()).arg("--skill").output().expect("dagr --skill failed to spawn");
     assert!(out.status.success(), "dagr --skill exited {:?}", out.status.code());
     assert_eq!(String::from_utf8_lossy(&out.stdout), on_disk);
-    assert!(on_disk.starts_with("---\nname: dagr-producer\n"), "skill lost its frontmatter");
+    let mut frontmatter = on_disk.lines();
+    assert_eq!(frontmatter.next(), Some("---"), "skill lost its frontmatter fence");
+    assert_eq!(
+        frontmatter.next(),
+        Some("name: dagr-producer"),
+        "skill lost its frontmatter name"
+    );
 }
 
 #[test]
