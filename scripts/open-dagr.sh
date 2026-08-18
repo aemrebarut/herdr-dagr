@@ -27,9 +27,9 @@ case "$place" in
 esac
 
 # Context parsing lives in the dagr binary itself (`dagr pane-cwd`) so the
-# launcher needs no interpreter. The binary is built by scripts/build.sh at
-# plugin-link time and sits next to this script's parent.
-dagr_bin="$(cd "$(dirname "$0")/.." && pwd)/target/release/dagr"
+# launcher needs no interpreter. Both the release installer and local build
+# place the binary at the plugin's stable bin/dagr path.
+dagr_bin="$(cd "$(dirname "$0")/.." && pwd)/bin/dagr"
 run_cwd=""
 if [ -x "$dagr_bin" ]; then
   run_cwd=$("$dagr_bin" pane-cwd 2>/dev/null || true)

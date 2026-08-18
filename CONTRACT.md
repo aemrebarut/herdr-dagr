@@ -93,7 +93,7 @@ attempt is blocked first.
 - `deps` — list of task IDs (`»` forward references in the rail; extra-dep
   `⇠` annotations off the primary tree).
 - **Fan-in sets are first-class**: a gate's `inputs` carry per-input live
-  state so the gate row can render `← L4✓ L5◐ L6✓` and name its blocker
+  state so the gate row can render `●◎●→⋈ G2` and name its blocker
   (`waits L5`).
 - **Promotion is an event, not an inference**: the producer emits a
   `promoted` event naming the `task` when a fan-in completes (v1 carries

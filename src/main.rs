@@ -28,6 +28,7 @@ USAGE:
       watches the file for changes; --snapshot prints one frame to stdout.
       Without a path: $DAGR_RUN, then .dagr/run.json / run.json under the
       herdr context cwd (waits for the file if none exists yet)
+      Set DAGR_WORKING_GLYPH=* for the ASCII working-state fallback.
   dagr stats <run.json> [--json]
       flow analytics over per-attempt timestamps: age, time-in-state,
       rework rate, WIP, critical path + naive ETA

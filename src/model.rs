@@ -2,7 +2,7 @@
 //! here every row is *derived*
 //! from contract data — tree shape from primary deps, attempt nesting from
 //! cause chains (a fix round nests under the review that sent it back),
-//! dotted futures from declared policy, fan-in chips from gate inputs.
+//! dotted futures from declared policy, join strips from gate inputs.
 //! The renderer invents nothing (CONTRACT.md, non-goals).
 
 use crate::contract::{Attempt, Doc, Task};
@@ -27,7 +27,11 @@ pub struct Row {
     pub name: String,
     pub title: String,
     pub title_dim: bool,
-    /// Fan-in chips / inline annotations, placed after the title.
+    /// Compact, derived fan-in state carried by gate rows. The renderer
+    /// chooses an expanded strip, counted strip, or total-only mark from
+    /// the available width; exact input ids remain in the selected unroll.
+    pub join: Option<GateJoin>,
+    /// Inline annotations, placed after the title.
     pub chips: Vec<Seg>,
     pub model: String,
     pub status: Vec<Seg>,
@@ -42,6 +46,13 @@ pub struct Row {
     pub has_kids: bool,
     /// Present when the subtree is folded shut under this row.
     pub fold: Option<FoldChip>,
+}
+
+#[derive(Clone)]
+pub struct GateJoin {
+    /// One effective task state per direct gate input, in the producer's
+    /// declared `inputs` / `deps` order.
+    pub states: Vec<String>,
 }
 
 /// The chip a folded row carries: how much is hidden, and any attention
@@ -69,6 +80,7 @@ impl Row {
             name: String::new(),
             title: String::new(),
             title_dim: false,
+            join: None,
             chips: Vec::new(),
             model: String::new(),
             status: Vec::new(),
@@ -333,15 +345,19 @@ impl<'a> Ix<'a> {
         }
     }
 
-    /// A gate hangs from the *latest-started* of its fan-in inputs — the
-    /// row nearest it in time, so the ← chips sit below the work they sum
-    /// — not from deps[0]. Ties break on key; inputs with no
-    /// attempts rank behind attempted ones, and their stub rows are used
-    /// only when nothing in the fan-in has run yet.
-    fn gate_parent(&self, task: &Task) -> Option<NodeRef> {
+    /// A gate with live history hangs from the latest-started input, which
+    /// preserves the executed trace. Before any input has run, attach it to
+    /// the deepest ancestor shared by every input spine: the gate is then a
+    /// sibling *after* the lanes it joins, not nested inside the first lane.
+    fn gate_parent(
+        &self,
+        gate: NodeRef,
+        task: &Task,
+        resolving: &mut std::collections::HashSet<NodeRef>,
+    ) -> Option<NodeRef> {
         let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
         let mut best: Option<(i64, String, NodeRef)> = None;
-        let mut stub: Option<NodeRef> = None;
+        let mut stubs: Vec<NodeRef> = Vec::new();
         for input in inputs {
             let Some(&ti) = self.task_by_id.get(input.as_str()) else { continue };
             match self.latest_attempt(ti) {
@@ -351,14 +367,49 @@ impl<'a> Ix<'a> {
                         best = Some(cand);
                     }
                 }
-                None => stub = stub.or(Some(NodeRef::T(ti))),
+                None => stubs.push(NodeRef::T(ti)),
             }
         }
-        best.map(|(_, _, n)| n).or(stub)
+        if let Some((_, _, n)) = best {
+            return Some(n);
+        }
+        let (first, rest) = stubs.split_first()?;
+        let first_chain = self.ancestor_chain(*first, resolving);
+        let other_chains: Vec<std::collections::HashSet<NodeRef>> = rest
+            .iter()
+            .map(|&n| self.ancestor_chain(n, resolving).into_iter().collect())
+            .collect();
+        first_chain
+            .into_iter()
+            .find(|&n| n != gate && other_chains.iter().all(|chain| chain.contains(&n)))
     }
 
     /// Parent node: cause chain first, then fan-in (gates), then primary dep.
     fn parent(&self, n: NodeRef) -> Option<NodeRef> {
+        self.parent_guarded(n, &mut std::collections::HashSet::new())
+    }
+
+    /// Parent resolution can recurse while finding the shared ancestor of
+    /// nested all-stub gates. Keep that recursion cycle-safe even for a
+    /// malformed document that the validator will reject.
+    fn parent_guarded(
+        &self,
+        n: NodeRef,
+        resolving: &mut std::collections::HashSet<NodeRef>,
+    ) -> Option<NodeRef> {
+        if !resolving.insert(n) {
+            return None;
+        }
+        let parent = self.parent_inner(n, resolving);
+        resolving.remove(&n);
+        parent
+    }
+
+    fn parent_inner(
+        &self,
+        n: NodeRef,
+        resolving: &mut std::collections::HashSet<NodeRef>,
+    ) -> Option<NodeRef> {
         let task = self.task_of(n);
         let is_gate = task.kind.as_deref() == Some("gate");
         if let Some(a) = self.attempt(n) {
@@ -373,9 +424,7 @@ impl<'a> Ix<'a> {
                 }
             }
             if is_gate {
-                if let Some(p) = self.gate_parent(task) {
-                    return Some(p);
-                }
+                return self.gate_parent(n, task, resolving);
             }
             let started = a.started_at.as_deref().and_then(parse_min);
             if let Some(dep) = task.deps.first() {
@@ -387,9 +436,7 @@ impl<'a> Ix<'a> {
         }
         // task stub
         if is_gate {
-            if let Some(p) = self.gate_parent(task) {
-                return Some(p);
-            }
+            return self.gate_parent(n, task, resolving);
         }
         if let Some(dep) = task.deps.first() {
             if let Some(&ti) = self.task_by_id.get(dep.as_str()) {
@@ -397,6 +444,27 @@ impl<'a> Ix<'a> {
             }
         }
         None
+    }
+
+    /// Node plus its rendered ancestors, nearest first. The local guard
+    /// bounds ordinary dependency cycles; `resolving` guards recursive
+    /// all-stub gate placement.
+    fn ancestor_chain(
+        &self,
+        start: NodeRef,
+        resolving: &mut std::collections::HashSet<NodeRef>,
+    ) -> Vec<NodeRef> {
+        let mut chain = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut cur = Some(start);
+        while let Some(n) = cur {
+            if resolving.contains(&n) || !seen.insert(n) {
+                break;
+            }
+            chain.push(n);
+            cur = self.parent_guarded(n, resolving);
+        }
+        chain
     }
 }
 
@@ -433,10 +501,16 @@ fn forest(ix: &Ix) -> Forest {
             _ => roots.push(n),
         }
     }
+    let cmp = |a: &NodeRef, b: &NodeRef| match (*a, *b) {
+        // Attempt-less siblings have no time signal. Preserve the producer's
+        // task-array order instead of making ids carry a hidden sort contract.
+        (NodeRef::T(ta), NodeRef::T(tb)) => ta.cmp(&tb),
+        _ => (ix.start_of(*a), ix.key_of(*a)).cmp(&(ix.start_of(*b), ix.key_of(*b))),
+    };
     for kids in &mut children {
-        kids.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
+        kids.sort_by(cmp);
     }
-    roots.sort_by_key(|&k| (ix.start_of(k), ix.key_of(k)));
+    roots.sort_by(cmp);
     Forest { all, children, index, roots }
 }
 
@@ -1070,13 +1144,14 @@ fn node_row(
             }
         }
     }
-    // gate: fan-in chips on *every* gate row, attempted or not (F2) — the
-    // ← set is the gate's identity. The waits/ready status only replaces
-    // the state word while no attempt has claimed the row.
+    // Gate: a state-bearing join strip on every gate row, attempted or not
+    // (F2). Exact input ids unroll on selection; at rest the ordered marks
+    // make the many-to-one topology and stream state visible at a glance.
+    // waits/ready only replaces the state word before the gate has an attempt.
     if kind == "gate" {
         let inputs = task.inputs.clone().unwrap_or_else(|| task.deps.clone());
         if !inputs.is_empty() {
-            let mut chips = vec![Seg("← ".into(), Style::fg(style::ACCENT))];
+            let mut states = Vec::with_capacity(inputs.len());
             let mut first_unmet: Option<(String, u8)> = None;
             for input in &inputs {
                 let ist = ix
@@ -1086,19 +1161,13 @@ fn node_row(
                     .unwrap_or("queued");
                 let col = style::state_color(ist);
                 let donei = ist == "done";
+                states.push(ist.to_string());
                 if !donei && first_unmet.is_none() {
                     first_unmet = Some((input.clone(), col));
                 }
-                chips.push(Seg(
-                    format!("{input}{} ", style::chip_mark(ist)),
-                    Style {
-                        fg: Some(col),
-                        bold: ist == "working",
-                        dim: donei,
-                    },
-                ));
             }
-            row.chips = chips;
+            row.join = Some(GateJoin { states });
+            row.glyph = '⋈';
             if ix.attempt(n).is_none() {
                 row.status = match first_unmet {
                     None => vec![Seg("ready".into(), Style::bold(style::DONE))],
@@ -1392,6 +1461,159 @@ mod tests {
         assert_eq!(keys(&scene), ["A·a1", "B"]);
         assert_eq!(scene.rows[1].parent.as_deref(), Some("A·a1"));
         assert_eq!(scene.rows[1].rail, " ╰─");
+    }
+
+    #[test]
+    fn all_stub_fanin_attaches_at_the_deepest_shared_ancestor() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "R", "title": "root", "state": "queued", "deps": [], "attempts": []},
+            {"id": "A1", "title": "lane a plan", "state": "queued", "deps": ["R"], "attempts": []},
+            {"id": "A2", "title": "lane a review", "state": "queued", "deps": ["A1"], "attempts": []},
+            {"id": "B1", "title": "lane b plan", "state": "queued", "deps": ["R"], "attempts": []},
+            {"id": "B2", "title": "lane b review", "state": "queued", "deps": ["B1"], "attempts": []},
+            {"id": "G", "title": "join lanes", "kind": "gate", "state": "queued",
+             "deps": ["A2", "B2"], "attempts": []},
+            {"id": "OUT", "title": "integration", "state": "queued", "deps": ["G"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["R", "A1", "A2", "B1", "B2", "G", "OUT"]);
+        let gate = scene.rows.iter().find(|r| r.key == "G").expect("gate row");
+        assert_eq!(gate.parent.as_deref(), Some("R"));
+        assert_eq!(
+            gate.join.as_ref().map(|j| j.states.as_slice()),
+            Some(["queued".to_string(), "queued".to_string()].as_slice())
+        );
+        assert_eq!(
+            scene.rows.iter().find(|r| r.key == "OUT").unwrap().parent.as_deref(),
+            Some("G")
+        );
+    }
+
+    #[test]
+    fn all_stub_fanin_without_a_shared_ancestor_stays_at_root() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "a", "state": "queued", "deps": [], "attempts": []},
+            {"id": "B", "title": "b", "state": "queued", "deps": [], "attempts": []},
+            {"id": "G", "title": "join", "kind": "gate", "state": "queued",
+             "deps": ["A", "B"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(
+            scene.rows.iter().find(|r| r.key == "G").unwrap().parent,
+            None
+        );
+    }
+
+    #[test]
+    fn all_stub_fanin_finds_a_shared_ancestor_beyond_many_retry_attempts() {
+        let retries = |task: &str| {
+            (1..=10)
+                .map(|n| {
+                    let mut attempt = serde_json::json!({
+                        "id": format!("{task}·a{n}"),
+                        "n": n,
+                        "state": "failed"
+                    });
+                    if n > 1 {
+                        attempt["cause"] = serde_json::json!({
+                            "type": "followup",
+                            "ref": format!("{task}·a{}", n - 1)
+                        });
+                    }
+                    attempt
+                })
+                .collect::<Vec<_>>()
+        };
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "R", "title": "root", "state": "done", "deps": [], "attempts": [
+                {"id": "R·a1", "n": 1, "state": "done"}
+            ]},
+            {"id": "AW", "title": "lane a history", "state": "failed", "deps": ["R"],
+             "attempts": retries("AW")},
+            {"id": "A", "title": "lane a input", "state": "queued", "deps": ["AW"], "attempts": []},
+            {"id": "BW", "title": "lane b history", "state": "failed", "deps": ["R"],
+             "attempts": retries("BW")},
+            {"id": "B", "title": "lane b input", "state": "queued", "deps": ["BW"], "attempts": []},
+            {"id": "G", "title": "join", "kind": "gate", "state": "queued",
+             "deps": ["A", "B"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(
+            scene.rows.iter().find(|r| r.key == "G").unwrap().parent.as_deref(),
+            Some("R·a1")
+        );
+    }
+
+    #[test]
+    fn attempted_fanin_keeps_latest_started_parent_selection() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "a", "state": "done", "deps": [], "attempts": [
+                {"id": "A·a1", "n": 1, "state": "done", "started_at": "2026-08-16T10:00:00Z"}
+            ]},
+            {"id": "B", "title": "b", "state": "done", "deps": [], "attempts": [
+                {"id": "B·a1", "n": 1, "state": "done", "started_at": "2026-08-16T10:10:00Z"}
+            ]},
+            {"id": "G", "title": "join", "kind": "gate", "state": "queued",
+             "deps": ["A", "B"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(
+            scene.rows.iter().find(|r| r.key == "G").unwrap().parent.as_deref(),
+            Some("B·a1")
+        );
+    }
+
+    #[test]
+    fn gate_join_glyph_keeps_blocked_and_review_attention_overlays() {
+        for (task_state, expected_color, status_word) in [
+            ("blocked", style::BLOCKED, "BLOCKED "),
+            ("review", style::REVIEW, "review "),
+        ] {
+            let doc = queued_tasks(serde_json::json!([
+                {"id": "A", "title": "input", "state": "done", "deps": [], "attempts": [
+                    {"id": "A·a1", "n": 1, "state": "done"}
+                ]},
+                {"id": "G", "title": "join", "kind": "gate", "owner": "reviewer",
+                 "unblock": "operator", "state": task_state, "deps": ["A"], "attempts": [
+                    {"id": "G·a1", "n": 1, "state": "working"}
+                 ]}
+            ]));
+
+            let scene = build(&doc, None, None, None, &ViewOpts::default());
+            let gate = scene.rows.iter().find(|r| r.name == "G").expect("gate row");
+            assert_eq!(gate.glyph, '⋈');
+            assert_eq!(gate.glyph_color, expected_color);
+            assert_eq!(gate.status.first().map(|s| s.0.as_str()), Some(status_word));
+        }
+    }
+
+    #[test]
+    fn cyclic_all_stub_gates_do_not_recurse_forever() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "G1", "title": "one", "kind": "gate", "state": "queued",
+             "deps": ["G2"], "attempts": []},
+            {"id": "G2", "title": "two", "kind": "gate", "state": "queued",
+             "deps": ["G1"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["G1", "G2"]);
+    }
+
+    #[test]
+    fn attempt_less_siblings_follow_task_declaration_order() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "R", "title": "root", "state": "queued", "deps": [], "attempts": []},
+            {"id": "Z-first", "title": "declared first", "state": "queued", "deps": ["R"], "attempts": []},
+            {"id": "A-second", "title": "declared second", "state": "queued", "deps": ["R"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["R", "Z-first", "A-second"]);
     }
 
     #[test]

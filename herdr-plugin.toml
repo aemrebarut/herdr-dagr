@@ -19,11 +19,13 @@ description = "Your agent swarm as a live DAG: an orchestration graph with attem
 min_herdr_version = "0.8.0"
 platforms = ["linux", "macos"]
 
-# Build from source at install time. A prebuilt-binary fast path may come
-# later; cargo is the only requirement today.
+# GitHub installs download and verify a binary only when its release commit
+# matches the installed source revision. Unreleased or locally changed refs
+# fall back to Cargo; `plugin link` skips build commands, so contributors run
+# scripts/build.sh.
 [[build]]
 platforms = ["linux", "macos"]
-command = ["/bin/sh", "scripts/build.sh"]
+command = ["bash", "scripts/install.sh"]
 
 # The viewer pane. herdr performs the split placement on launch; the
 # [[actions]] below summon it.
@@ -34,9 +36,9 @@ placement = "split"
 # The binary is resolved from $HERDR_PLUGIN_ROOT (injected by herdr into
 # pane processes), NOT relatively: herdr resolves a relative argv[0]
 # against the pane's cwd, and the launcher sets --cwd to the USER'S
-# workspace for run-file discovery — a bare "./target/release/dagr"
-# only ever worked when that workspace happened to be this repo.
-command = ["/bin/sh", "-c", "exec \"${HERDR_PLUGIN_ROOT:?not launched by herdr}/target/release/dagr\" view"]
+# workspace for run-file discovery — a bare "./bin/dagr"
+# only works when that workspace happens to be the plugin root.
+command = ["/bin/sh", "-c", "exec \"${HERDR_PLUGIN_ROOT:?not launched by herdr}/bin/dagr\" view"]
 
 # Summon the pane (bind to a key in ~/.config/herdr/config.toml, or run
 # `herdr plugin action invoke open-dagr --plugin herdr-dagr`). The

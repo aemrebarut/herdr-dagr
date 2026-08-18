@@ -229,6 +229,16 @@ differs from the dependency set:
  "state": "queued", "deps": ["L1", "L2", "L3"], "attempts": []}
 ```
 
+Declare gate inputs in the intentional human reading order, and keep the
+whole `tasks` array intentional too: dagr preserves declaration order for
+attempt-less siblings and for the gate's state-bearing join strip. Do not
+rename ids for sorting, attach the gate to one lane as a layout workaround,
+or add a synthetic "join" task. Declare the truthful fan-in; dagr attaches an
+all-queued gate at the inputs' deepest shared ancestor and renders each direct
+input as `○` waiting, `◎` working, or `●` satisfied (plus the normal
+blocked/review/failure marks). On narrow panes it aggregates those marks; a
+selected gate still reveals the exact input ids.
+
 When the last input lands, append a `promoted` event — **with its `at`
 timestamp**, like every event:
 

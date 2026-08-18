@@ -4,7 +4,7 @@
 //! below — tig's grammar). Renderers are pure functions of (state, width).
 
 use crate::contract::{Attempt, Doc, Task};
-use crate::model::{parse_min, Row, Scene, Seg};
+use crate::model::{parse_min, GateJoin, Row, Scene, Seg};
 use crate::style::{self, paint, trunc, Line, Style};
 use unicode_width::UnicodeWidthStr;
 
@@ -27,6 +27,152 @@ fn seg_put(line: &mut Line, mut x: usize, segs: &[Seg], limit: usize) -> usize {
     x
 }
 
+fn seg_width(segs: &[Seg]) -> usize {
+    segs.iter().map(|Seg(s, _)| s.width()).sum()
+}
+
+fn join_mark_style(state: &str) -> Style {
+    Style {
+        fg: Some(style::state_color(state)),
+        bold: matches!(state, "working" | "blocked" | "failed" | "lost"),
+        dim: false,
+    }
+}
+
+/// The join carries the same information at three densities. Prefer the
+/// per-input strip; collapse to state counts, then to N→1 when the rail or
+/// terminal leaves less room. The selected gate still unrolls exact ids.
+fn join_candidates(join: &GateJoin) -> [Vec<Seg>; 3] {
+    let mut full: Vec<Seg> = join
+        .states
+        .iter()
+        .map(|state| {
+            Seg(
+                style::state_glyph(state).to_string(),
+                join_mark_style(state),
+            )
+        })
+        .collect();
+    full.push(Seg("→".into(), Style::fg(style::ACCENT)));
+
+    let mut counts = Vec::new();
+    let mut emitted = 0usize;
+    for state in [
+        "done",
+        "working",
+        "review",
+        "blocked",
+        "queued",
+        "failed",
+        "rejected",
+        "settled_unverified",
+        "lost",
+    ] {
+        let count = join.states.iter().filter(|s| s.as_str() == state).count();
+        if count == 0 {
+            continue;
+        }
+        if emitted > 0 {
+            counts.push(Seg(" ".into(), Style::plain()));
+        }
+        counts.push(Seg(
+            format!("{}{count}", style::state_glyph(state)),
+            join_mark_style(state),
+        ));
+        emitted += count;
+    }
+    let unknown = join.states.len().saturating_sub(emitted);
+    if unknown > 0 {
+        if emitted > 0 {
+            counts.push(Seg(" ".into(), Style::plain()));
+        }
+        counts.push(Seg(format!("·{unknown}"), Style::fg(style::MUTED)));
+    }
+    counts.push(Seg("→".into(), Style::fg(style::ACCENT)));
+
+    let total = vec![Seg(
+        format!("{}→1 ", join.states.len()),
+        Style::bold(style::ACCENT),
+    )];
+    [full, counts, total]
+}
+
+/// Draw the optional join prefix, row glyph, and id while reserving enough
+/// room for a recognizable id. Returns the first column after the id.
+fn row_head(
+    line: &mut Line,
+    row: &Row,
+    mut x: usize,
+    limit: usize,
+    force_tiny_join: bool,
+    name_prefix: usize,
+) -> usize {
+    if let Some(join) = &row.join {
+        let reserve_name = row.name.width().min(name_prefix) + 2; // glyph + gap + useful id
+        let room = limit.saturating_sub(x + reserve_name);
+        let candidates = join_candidates(join);
+        let picked = if force_tiny_join {
+            candidates.get(2).filter(|segs| seg_width(segs) <= room)
+        } else {
+            candidates.iter().find(|segs| seg_width(segs) <= room)
+        };
+        if let Some(segs) = picked {
+            x = seg_put(line, x, segs, limit);
+        }
+    }
+    x = line.put(
+        x,
+        &row.glyph.to_string(),
+        Style { fg: Some(row.glyph_color), bold: row.hot, dim: false },
+    );
+    let name_style = if row.dotted && row.glyph != '»' {
+        Style::fg(style::GHOST)
+    } else if row.glyph == '»' {
+        Style::fg(style::ACCENT)
+    } else {
+        Style { fg: Some(row.glyph_color), bold: row.hot, dim: false }
+    };
+    line.put(x, &format!(" {}", row.name), name_style)
+}
+
+/// Preserve the row's local branch ending while eliding ancestry that cannot
+/// fit beside the minimum useful head. This is only used after status has
+/// already yielded its space, so normal-width tree geometry is unchanged.
+fn fit_rail(rail: &str, max_width: usize) -> String {
+    if rail.width() <= max_width {
+        return rail.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".into();
+    }
+    use unicode_width::UnicodeWidthChar;
+    let mut used = 0usize;
+    let mut tail = Vec::new();
+    for c in rail.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > max_width - 1 {
+            break;
+        }
+        used += cw;
+        tail.push(c);
+    }
+    tail.reverse();
+    format!("…{}", tail.into_iter().collect::<String>())
+}
+
+fn head_min_width(row: &Row, name_prefix: usize) -> usize {
+    let name = row.name.width().min(name_prefix);
+    let base = 1 + usize::from(name > 0) + name; // glyph, gap, recognizable id
+    row.join
+        .as_ref()
+        .map(|join| seg_width(&join_candidates(join)[2]))
+        .unwrap_or(0)
+        + base
+}
+
 /// One full-grammar trace row, responsive: model/status/agent columns
 /// hang off the right edge. Also returns the column span of the fold
 /// chip when one was drawn, so a click on it can toggle the fold.
@@ -39,20 +185,14 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
         l.put(0, "▍", Style::bold(style::ACCENT));
     }
     let rail_style = if row.dotted { Style::fg(style::GHOST) } else { Style::fg(style::EDGE) };
-    let mut x = l.put(1, &row.rail, rail_style);
-    if row.reentry && !row.rail.is_empty() {
+    let max_rail = model_x.saturating_sub(2).saturating_sub(head_min_width(row, 8));
+    let rail = fit_rail(&row.rail, max_rail);
+    let mut x = l.put(1, &rail, rail_style);
+    if row.reentry && !rail.is_empty() {
         // the branch lead's `─` becomes ↩ — the loop lives in the rail
         l.put(x - 1, "↩", Style::bold(style::REJECTED));
     }
-    x = l.put(x, &row.glyph.to_string(), Style { fg: Some(row.glyph_color), bold: row.hot, dim: false });
-    let name_style = if row.dotted && row.glyph != '»' {
-        Style::fg(style::GHOST)
-    } else if row.glyph == '»' {
-        Style::fg(style::ACCENT)
-    } else {
-        Style { fg: Some(row.glyph_color), bold: row.hot, dim: false }
-    };
-    x = l.put(x, &format!(" {}", row.name), name_style);
+    x = row_head(&mut l, row, x, model_x.saturating_sub(1), false, 8);
     // the fold chip sits BEFORE the title: on a folded row the fold is
     // the fact, and a long title must never push it off the row
     let mut fold_span = None;
@@ -89,41 +229,13 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
 
 /// Narrow two-column row for the sidecar's left panel.
 fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
-    let mut l = Line::new(w);
-    if row.lit {
-        l.put(0, "▍", Style::bold(style::ACCENT));
-    }
-    let rail_style = if row.dotted { Style::fg(style::GHOST) } else { Style::fg(style::EDGE) };
-    let mut x = l.put(1, &row.rail, rail_style);
-    if row.reentry && !row.rail.is_empty() {
-        l.put(x - 1, "↩", Style::bold(style::REJECTED));
-    }
-    x = l.put(x, &row.glyph.to_string(), Style { fg: Some(row.glyph_color), bold: row.hot, dim: false });
-    let name_style = if row.dotted && row.glyph != '»' {
-        Style::fg(style::GHOST)
-    } else if row.glyph == '»' {
-        Style::fg(style::ACCENT)
-    } else {
-        Style { fg: Some(row.glyph_color), bold: row.hot, dim: false }
-    };
-    x = l.put(x, &format!(" {}", row.name), name_style);
-    // the fold marker survives compaction: ▸ + hidden count, tinted by
-    // the strongest attention state inside the fold
-    let mut fold_span = None;
-    if let Some(f) = &row.fold {
-        let fx = x + 1;
-        x = l.put(fx, &format!("▸{}", f.hidden), Style::bold(f.hot.unwrap_or(style::ACCENT)));
-        fold_span = Some((fx, x));
-    }
-    // the right-aligned status tail is sized FIRST — the title gets what
-    // is left of it, so a truncated title can never run under the state
-    // word (the "atteBLOCKED" bug the width matrix caught)
+    // Size the right-aligned status before the join/head. Both are primary
+    // signals; title/model text uses only the space that remains.
     let mut tail: Vec<(String, Style)> =
         row.status.iter().map(|Seg(s, st)| (s.clone(), *st)).collect();
     let tw = |t: &[(String, Style)]| t.iter().map(|(s, _)| s.width()).sum::<usize>();
     if !tail.is_empty() {
         let avail = w.saturating_sub(2).min(18);
-        // trailing segs drop first; the leading state word drops last (F6)
         while tail.len() > 1 && tw(&tail) > avail {
             tail.pop();
         }
@@ -133,33 +245,61 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
             }
         }
     }
-    let status_x = w.saturating_sub(tw(&tail) + 1);
+    let mut status_x = w.saturating_sub(tw(&tail) + 1);
+
+    let mut l = Line::new(w);
+    if row.lit {
+        l.put(0, "▍", Style::bold(style::ACCENT));
+    }
+    let rail_style = if row.dotted { Style::fg(style::GHOST) } else { Style::fg(style::EDGE) };
+    let mut rail = row.rail.clone();
+    // A very deep rail can leave less room than the right-anchored status
+    // assumed. The row identity and tiny N→1 join outrank a clipped status
+    // word; shorten or drop the tail before it can overwrite the head.
+    let tail_room = w
+        .saturating_sub(2)
+        .saturating_sub(1 + rail.width() + head_min_width(row, 4));
+    if tw(&tail) > tail_room {
+        while tail.len() > 1 && tw(&tail) > tail_room {
+            tail.pop();
+        }
+        if tw(&tail) > tail_room {
+            if tail_room < 5 {
+                tail.clear();
+            } else if let Some((s0, _)) = tail.first_mut() {
+                *s0 = trunc(s0.trim(), tail_room);
+            }
+        }
+        status_x = w.saturating_sub(tw(&tail) + 1);
+    }
+    let max_rail = status_x
+        .saturating_sub(2)
+        .saturating_sub(head_min_width(row, 4));
+    rail = fit_rail(&rail, max_rail);
+    let mut x = l.put(1, &rail, rail_style);
+    if row.reentry && !rail.is_empty() {
+        l.put(x - 1, "↩", Style::bold(style::REJECTED));
+    }
+    x = row_head(&mut l, row, x, status_x.saturating_sub(1), w <= 24, 4);
+    // the fold marker survives compaction: ▸ + hidden count, tinted by
+    // the strongest attention state inside the fold
+    let mut fold_span = None;
+    if let Some(f) = &row.fold {
+        let fx = x + 1;
+        x = l.put(fx, &format!("▸{}", f.hidden), Style::bold(f.hot.unwrap_or(style::ACCENT)));
+        fold_span = Some((fx, x));
+    }
     // short title: drop the "kind: " prefix, truncate hard
     let room = status_x.saturating_sub(x + 2);
-    // gate rows: the ← fan-in chips ARE the information — they replace the
-    // title when space is tight. Annotation chips (⇠ ink) stay secondary:
-    // compact rows keep the title and drop them.
-    let fanin = row.chips.first().map(|Seg(s, _)| s.starts_with('←')).unwrap_or(false);
-    let left_end = if fanin {
-        let mut cx = x + 1;
-        for Seg(s, st) in &row.chips {
-            if cx + s.width() > x + 1 + room {
-                break;
-            }
-            cx = l.put(cx, s, *st);
-        }
-        cx
+    let short = row.title.split_once(": ").map(|(_, t)| t).unwrap_or(&row.title);
+    let title_style = if row.dotted {
+        Style::dim(style::GHOST)
+    } else if row.title_dim {
+        Style::plain_dim()
     } else {
-        let short = row.title.split_once(": ").map(|(_, t)| t).unwrap_or(&row.title);
-        let title_style = if row.dotted {
-            Style::dim(style::GHOST)
-        } else if row.title_dim {
-            Style::plain_dim()
-        } else {
-            Style::fg(style::TEXT)
-        };
-        l.put(x + 1, &trunc(short, room), title_style)
+        Style::fg(style::TEXT)
     };
+    let left_end = l.put(x + 1, &trunc(short, room), title_style);
     // right-anchored annotations, strictly leftover space — never at the
     // title's expense. The » gate tag (selection ink) outranks the model
     // chip; each appears only with a 2-col gap on both sides, and both
@@ -768,7 +908,7 @@ pub fn help_lines() -> Vec<String> {
     }
     out.push(String::new());
     out.push(paint(
-        " grammar: ● done ◐ working ◈ review ■ blocked ○ queued ✗ failed/sent-back ↩ re-entry ⟲ loop-stub » forward-ref ← fan-in",
+        " grammar: ● done ◎ working ◈ review ■ blocked ○ queued ✗ failed/sent-back ⋈ join ↩ re-entry ⟲ loop-stub » forward-ref",
         Style::dim(style::MUTED),
     ));
     out.push(paint(

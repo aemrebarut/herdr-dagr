@@ -62,7 +62,12 @@ pub fn state_color(state: &str) -> u8 {
 pub fn state_glyph(state: &str) -> char {
     match state {
         "done" => '●',
-        "working" => '◐',
+        // Some terminal/font stacks fall back to a mismatched face for
+        // geometric symbols. ◎ is the coherent default; an explicit `*`
+        // override is the portable escape hatch (auto-detecting visual font
+        // metrics is not possible through a terminal protocol).
+        "working" if std::env::var("DAGR_WORKING_GLYPH").as_deref() == Ok("*") => '*',
+        "working" => '◎',
         "blocked" => '■',
         "review" => '◈',
         "queued" => '○',
@@ -83,7 +88,7 @@ pub fn evidence(tier: &str) -> (char, u8) {
     }
 }
 
-/// Live-state chip mark for fan-in lists (← L4r✓ L5r◐ L6r✓).
+/// Live-state chip mark for compact dependency lists.
 pub fn chip_mark(state: &str) -> char {
     match state {
         "done" => '✓',

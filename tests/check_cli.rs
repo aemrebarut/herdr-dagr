@@ -618,6 +618,14 @@ fn durations_are_terminal_only_and_rework_is_cause_based() {
 // ── view --snapshot robustness: hostile-but-parsing inputs must not panic ──
 
 fn run_snapshot(doc: &str, extra: &[&str]) -> (i32, String) {
+    run_snapshot_with_working_glyph(doc, extra, None)
+}
+
+fn run_snapshot_with_working_glyph(
+    doc: &str,
+    extra: &[&str],
+    working_glyph: Option<&str>,
+) -> (i32, String) {
     let dir = std::env::temp_dir().join(format!(
         "dagr-snap-{}-{:?}",
         std::process::id(),
@@ -628,7 +636,12 @@ fn run_snapshot(doc: &str, extra: &[&str]) -> (i32, String) {
     std::fs::write(&path, doc).unwrap();
     let mut args = vec!["view", path.to_str().unwrap(), "--snapshot"];
     args.extend_from_slice(extra);
-    let out = Command::new(env!("CARGO_BIN_EXE_dagr")).args(&args).output().unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dagr"));
+    command.args(&args).env_remove("DAGR_WORKING_GLYPH");
+    if let Some(glyph) = working_glyph {
+        command.env("DAGR_WORKING_GLYPH", glyph);
+    }
+    let out = command.output().unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     (
         out.status.code().unwrap_or(-1),
@@ -700,6 +713,15 @@ fn state_matrix_renders_inside_every_width() {
 }
 
 #[test]
+fn working_glyph_uses_bullseye_with_explicit_ascii_fallback() {
+    let (_, normal) = run_snapshot(STATES, &["--width", "200"]);
+    let (_, ascii) =
+        run_snapshot_with_working_glyph(STATES, &["--width", "200"], Some("*"));
+    assert!(strip_ansi(&normal).contains("◎ T2"), "default working glyph is ◎");
+    assert!(strip_ansi(&ascii).contains("* T2"), "explicit fallback is ASCII *");
+}
+
+#[test]
 fn blocked_and_review_outrank_working_attempts() {
     let (_, out) = run_snapshot(STATES, &["--width", "200"]);
     let plain = strip_ansi(&out);
@@ -719,12 +741,93 @@ fn stubs_are_earned_not_ambient() {
 }
 
 #[test]
-fn gates_show_fanin_chips_with_and_without_attempts() {
+fn gates_show_state_bearing_joins_with_and_without_attempts() {
     let (_, out) = run_snapshot(STATES, &["--width", "200"]);
     let plain = strip_ansi(&out);
-    let chip_rows = plain.lines().filter(|l| l.contains("← T1")).count();
-    assert!(chip_rows >= 2, "both G1 (no attempts) and G2 (attempted) show chips:\n{plain}");
+    let g1 = plain.lines().find(|l| l.contains("⋈ G1")).expect("G1 row");
+    let g2 = plain.lines().find(|l| l.contains("⋈ G2")).expect("G2 row");
+    assert!(g1.contains("●◎✗→⋈ G1"), "G1 shows ordered done/working/failed inputs:\n{g1}");
+    assert!(g2.contains("●→⋈ G2"), "attempted G2 keeps the join:\n{g2}");
     assert!(plain.contains("waits T2"), "unmet gate names its blocker");
+}
+
+fn seven_lane_join_doc() -> String {
+    seven_lane_join_doc_at_depth(4, "G")
+}
+
+fn seven_lane_join_doc_at_depth(root_depth: usize, gate_id: &str) -> String {
+    let mut tasks = Vec::new();
+    for depth in 0..root_depth {
+        let id = format!("R{depth}");
+        let deps = if depth == 0 { vec![] } else { vec![format!("R{}", depth - 1)] };
+        tasks.push(serde_json::json!({
+            "id": id,
+            "title": "root",
+            "kind": "impl",
+            "state": "queued",
+            "deps": deps,
+            "attempts": []
+        }));
+    }
+    let lane_parent = format!("R{}", root_depth - 1);
+    for lane in 1..=7 {
+        let id = format!("STREAM{lane}");
+        tasks.push(serde_json::json!({
+            "id": id,
+            "title": "lane",
+            "kind": "impl",
+            "state": "queued",
+            "deps": [lane_parent],
+            "attempts": []
+        }));
+    }
+    tasks.push(serde_json::json!({
+        "id": gate_id,
+        "title": "join seven lanes",
+        "kind": "gate",
+        "state": "queued",
+        "deps": ["STREAM1", "STREAM2", "STREAM3", "STREAM4", "STREAM5", "STREAM6", "STREAM7"],
+        "attempts": []
+    }));
+    serde_json::json!({
+        "dagr": 1,
+        "run": {"id": "join", "title": "join"},
+        "generated_at": "2026-08-17T12:00:00Z",
+        "tasks": tasks,
+        "events": []
+    })
+    .to_string()
+}
+
+#[test]
+fn join_strip_degrades_from_inputs_to_counts_to_total() {
+    let doc = seven_lane_join_doc();
+    let (_, wide) = run_snapshot(&doc, &["--width", "78"]);
+    let (_, compact) = run_snapshot(&doc, &["--width", "34"]);
+    let (_, tiny) = run_snapshot(&doc, &["--width", "20"]);
+    assert!(strip_ansi(&wide).contains("○○○○○○○→⋈ G"), "wide strip:\n{wide}");
+    assert!(strip_ansi(&compact).contains("○7→⋈ G"), "counted strip:\n{compact}");
+    assert!(strip_ansi(&tiny).contains("7→1 ⋈ G"), "tiny strip:\n{tiny}");
+}
+
+#[test]
+fn deep_rows_elide_ancestry_before_join_or_identity() {
+    let compact_doc = seven_lane_join_doc_at_depth(10, "GATE-LONG");
+    let (_, tiny) = run_snapshot(&compact_doc, &["--width", "20"]);
+    let plain = strip_ansi(&tiny);
+    let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
+    assert!(gate.contains("…"), "deep ancestry is explicitly elided:\n{gate}");
+    assert!(gate.contains("7→1 ⋈ GATE"), "join and useful id prefix survive:\n{gate}");
+
+    let full_doc = seven_lane_join_doc_at_depth(30, "GATE-LONG");
+    let (_, full) = run_snapshot(&full_doc, &["--width", "96"]);
+    let plain = strip_ansi(&full);
+    let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
+    assert!(gate.contains("…"), "deep ancestry is explicitly elided:\n{gate}");
+    assert!(
+        gate.contains("○7→⋈ GATE-LONG"),
+        "join and useful id prefix survive the full layout:\n{gate}"
+    );
 }
 
 #[test]

@@ -1,0 +1,78 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Match tag and package versions
+        shell: bash
+        run: |
+          cargo_version=$(sed -nE 's/^version = "([^"]+)"/\1/p' Cargo.toml | head -1)
+          plugin_version=$(sed -nE 's/^version = "([^"]+)"/\1/p' herdr-plugin.toml | head -1)
+          test "$GITHUB_REF_NAME" = "v$cargo_version"
+          test "$plugin_version" = "$cargo_version"
+      - run: cargo test --release --locked
+
+  create-release:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create draft release
+        run: >-
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"
+          --verify-tag --draft --generate-notes --title "dagr $GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Record the exact release revision
+        run: |
+          git rev-parse HEAD > COMMIT
+          gh release upload "$GITHUB_REF_NAME" COMMIT --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  binaries:
+    needs: create-release
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v7
+      - id: upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: dagr
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          checksum: sha256
+          locked: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/attest@v4
+        with:
+          subject-path: ${{ steps.upload.outputs.tar }}
+
+  publish:
+    needs: binaries
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

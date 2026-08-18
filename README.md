@@ -32,9 +32,8 @@ and tell me what it does and whether it fits the way I run agents.
 ### No more questions, how do I get this?
 
 ```sh
-command -v cargo || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # dagr builds from source, so it needs cargo
-herdr plugin install aemrebarut/herdr-dagr                                           # the pane
-npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g                        # teach your agent to feed it
+herdr plugin install aemrebarut/herdr-dagr                            # prebuilt on released tags
+npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g         # teach your agent to feed it
 ```
 
 The last command is what makes the pane useful: it installs the producer
@@ -133,15 +132,18 @@ happened, in a schema that can't blur "the agent said done" into
 ├─● L3 contract freeze        done ◆ verified   12m
 ├─✗ L4·a1 impl: gate schema   sent back        10m  builder-2  ✗ operator "err paths untested"
 ├↩● L4·a2 impl: gate schema   done ◇ reported   7m  builder-2
-├─◐ L5 impl: renderer core    working          14m  builder-1
+├─◎ L5 impl: renderer core    working          14m  builder-1
 │ ╰┄○ L5r review              (future: on done)
-■ G2 integration gate         waits L5r        ← L4✓ L5◐ L6✓
+├─●◎●→⋈ G2 integration gate   waits L5r
 ```
 
-Gate rows carry fan-in chips (`← L4✓ L5◐ L6✓`) with per-input live
-state; a blocked gate names its blocker. Moving the cursor unrolls
-fan-in and policy trees and highlights the edges that justify the
-selected row.
+Gate rows carry state-bearing joins (`●◎●→⋈ G2`) in declared input order;
+narrow panes collapse them to counts and then `N→1`. Moving the cursor
+reveals exact input ids and highlights the edges that justify the selected
+row.
+
+If a terminal font renders `◎` unevenly, set `DAGR_WORKING_GLYPH=*` for the
+single-cell ASCII working mark.
 
 ## Layout
 
@@ -192,10 +194,16 @@ a stray click can't confirm anything.
 ## Install
 
 ```sh
-herdr plugin install aemrebarut/herdr-dagr   # builds via scripts/build.sh (cargo required)
+herdr plugin install aemrebarut/herdr-dagr   # checksum-verified prebuilt on released tags
 herdr plugin action invoke open-dagr --plugin herdr-dagr
 npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g   # teach your agent to feed it
 ```
+
+Released revisions download a matching macOS/Linux binary. The installer
+checks the release's recorded commit as well as its checksum, so an unreleased
+or locally changed ref builds from source instead of silently downloading
+older code. Until the first binary-bearing release is tagged, installs from
+`main` therefore still need Cargo.
 
 Or from a clone, `herdr plugin link .` at the repo root.
 
@@ -230,7 +238,7 @@ dagr stats samples/run.json
 dagr --skill                          # the producer skill, as shipped
 ```
 
-`cargo` is the only build requirement.
+Cargo is required only when building from source.
 
 ## Repo layout
 

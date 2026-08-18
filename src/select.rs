@@ -235,9 +235,9 @@ mod tests {
 
     #[test]
     fn slice_treats_wide_glyphs_as_two_columns() {
-        let line = paint("◐ 日本 x", Style::plain());
-        assert_eq!(plain(&line), "◐ 日本 x");
-        // ◐ is one column, then a space, then two two-column glyphs
+        let line = paint("◎ 日本 x", Style::plain());
+        assert_eq!(plain(&line), "◎ 日本 x");
+        // ◎ is one column, then a space, then two two-column glyphs
         assert_eq!(slice(&line, 2, 6), "日本");
         assert_eq!(slice(&line, 7, 8), "x");
     }
