@@ -21,6 +21,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
 #[derive(Clone, Default)]
@@ -156,6 +157,7 @@ fn worker(
 
 /// Longest stream record we accept before declaring the peer wedged; a
 /// hostile or broken daemon must not grow our buffer without bound.
+#[cfg(unix)]
 const MAX_LINE: usize = 1 << 20;
 
 /// One `session.snapshot` round-trip → pane map. Strict on identity: a
@@ -365,6 +367,7 @@ fn parse_record(line: &str) -> Result<serde_json::Value, ()> {
 /// Pane identity: top-level `pane_id` (global lifecycle + parameterized
 /// events) or nested `pane.pane_id` (`pane_created`/`pane_updated` carry a
 /// full PaneInfo).
+#[cfg(unix)]
 fn evt_pane_id(data: Option<&serde_json::Value>) -> Option<String> {
     let d = data?;
     d.get("pane_id")
@@ -375,6 +378,7 @@ fn evt_pane_id(data: Option<&serde_json::Value>) -> Option<String> {
 
 /// Agent status, wherever the envelope put it. `None` when the event
 /// genuinely carries none — never invented.
+#[cfg(unix)]
 fn evt_status(data: Option<&serde_json::Value>) -> Option<String> {
     let d = data?;
     d.get("agent_status")
@@ -383,6 +387,7 @@ fn evt_status(data: Option<&serde_json::Value>) -> Option<String> {
         .map(String::from)
 }
 
+#[cfg(unix)]
 fn apply_event(state: &Arc<Mutex<Hints>>, event: &str, data: Option<&serde_json::Value>) {
     let Some(pane) = evt_pane_id(data) else { return };
     let Ok(mut h) = state.lock() else { return };

@@ -44,6 +44,7 @@ Then open the pane from inside herdr:
 
 ```sh
 herdr plugin action invoke open-dagr --plugin herdr-dagr
+# Windows preview: invoke open-dagr-windows instead
 ```
 
 There is one action per side (`open-dagr-right`, `-down`, `-up`,
@@ -199,11 +200,19 @@ herdr plugin action invoke open-dagr --plugin herdr-dagr
 npx skills add aemrebarut/herdr-dagr --skill dagr-producer -g   # teach your agent to feed it
 ```
 
-Released revisions download a matching macOS/Linux binary. The installer
-checks the release's recorded commit as well as its checksum, so an unreleased
-or locally changed ref builds from source instead of silently downloading
-older code. Until the first binary-bearing release is tagged, installs from
-`main` therefore still need Cargo.
+Released revisions download a matching binary for macOS (Apple or Intel),
+Linux (x86-64 or ARM64), or Windows x86-64. The installer checks the release's
+recorded commit as well as its checksum, so a normal released install needs no
+Rust or Cargo. An unreleased or locally changed ref builds from source instead
+of silently downloading older code.
+
+Windows support follows Herdr's current preview boundary. Use the
+`open-dagr-windows` action (or the side-specific `-down-windows`,
+`-up-windows`, `-left-windows`, and `-right-windows` ids). Rendering,
+navigation, folding, search, and producer actions are supported. Herdr's
+live pane-liveness overlay and Enter-to-focus link currently use Unix sockets,
+so those two conveniences are unavailable on Windows until Herdr exposes an
+equivalent named-pipe link.
 
 Or from a clone, `herdr plugin link .` at the repo root.
 
@@ -224,7 +233,8 @@ description = "open dagr run DAG in split"
 
 That opens it to the right. Want it somewhere else? Bind
 `open-dagr-down`, `open-dagr-up`, `open-dagr-left`, or
-`open-dagr-right` instead, one key per side.
+`open-dagr-right` instead, one key per side. On Windows, bind the matching
+ids suffixed with `-windows` (for example, `open-dagr-right-windows`).
 
 Or standalone, without herdr:
 
@@ -270,7 +280,7 @@ Cargo is required only when building from source.
 
 ## Status
 
-**v0.1.** Contract frozen at v1. The pane renders the full grammar at
+**v0.1.5.** Contract frozen at v1. The pane renders the full grammar at
 any width without crashing and stays readable down to about 34 columns.
 The producer skill onboards a fresh agent to a run file that is
 strict-clean on its first write and matches the ground truth it models;

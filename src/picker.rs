@@ -147,9 +147,14 @@ fn label_for(p: &Path, base: &Path) -> String {
 }
 
 fn mru_file() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let windows_base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    #[cfg(not(windows))]
+    let windows_base: Option<PathBuf> = None;
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|p| !p.as_os_str().is_empty())
+        .or(windows_base)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))?;
     Some(base.join("dagr/recent"))
 }

@@ -447,11 +447,11 @@ impl App {
     fn snap_selection(&mut self) {
         let Some(sel) = self.selected.clone() else { return };
         let keys = self.selectable_keys();
-        if keys.iter().any(|k| *k == sel) {
+        if keys.contains(&sel) {
             return;
         }
         for anc in model::ancestors(&self.loaded.doc, &sel) {
-            if keys.iter().any(|k| *k == anc) {
+            if keys.contains(&anc) {
                 self.selected = Some(anc);
                 return;
             }

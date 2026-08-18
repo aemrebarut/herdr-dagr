@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo test --release --locked
+
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Parse PowerShell scripts
+        shell: powershell
+        run: |
+          $failed = $false
+          foreach ($path in @('scripts/build.ps1', 'scripts/install.ps1', 'scripts/open-dagr.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path), [ref]$tokens, [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$path`: $_" }
+              $failed = $true
+            }
+          }
+          if ($failed) { exit 1 }
+      - run: cargo build --release --locked
+      - name: Install the exact release asset without Cargo
+        shell: powershell
+        run: |
+          $assets = Join-Path $env:RUNNER_TEMP 'dagr-assets'
+          $install = Join-Path $env:RUNNER_TEMP 'dagr-install'
+          New-Item -ItemType Directory -Path $assets, $install -Force | Out-Null
+
+          $archive = Join-Path $assets 'dagr-x86_64-pc-windows-msvc.zip'
+          Compress-Archive -LiteralPath 'target\release\dagr.exe' -DestinationPath $archive
+          (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() |
+            Set-Content -LiteralPath (Join-Path $assets 'dagr-x86_64-pc-windows-msvc.sha256') -Encoding ascii
+          (git rev-parse HEAD) |
+            Set-Content -LiteralPath (Join-Path $assets 'COMMIT') -Encoding ascii
+
+          $gitDir = Split-Path -Parent (Get-Command git).Source
+          $env:PATH = "$gitDir;$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          if (Get-Command cargo -ErrorAction SilentlyContinue) {
+            throw 'Cargo unexpectedly remains on the installer test PATH'
+          }
+          $env:DAGR_RELEASE_BASE = (New-Object System.Uri((Resolve-Path $assets).Path)).AbsoluteUri.TrimEnd('/')
+          $env:DAGR_INSTALL_BIN_DIR = $install
+          & .\scripts\install.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $version = (& (Join-Path $install 'dagr.exe') --version | Out-String).Trim()
+          $packageVersion = (Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"([^"]+)"' |
+            Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($version -ne "dagr $packageVersion (contract v1)") {
+            throw "unexpected installed version: $version"
+          }

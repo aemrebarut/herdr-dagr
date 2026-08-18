@@ -264,6 +264,7 @@ pub fn run(pending: &Pending) -> String {
         Ok(c) => c,
         Err(e) => return format!("{}: spawn failed: {e}", pending.verb),
     };
+    #[cfg(unix)]
     let pid = child.id();
     let out_rx = drain(child.stdout.take());
     let err_rx = drain(child.stderr.take());
@@ -480,20 +481,28 @@ mod tests {
 
     #[test]
     fn run_failure_flash_is_the_last_stderr_line_not_the_traceback_header() {
+        #[cfg(unix)]
+        let argv = vec![
+            "/bin/sh".into(), "-c".into(),
+            "echo 'Traceback (most recent call last):' >&2; echo '  File x, line 1' >&2; echo 'IndexError: list index out of range' >&2; exit 1".into(),
+        ];
+        #[cfg(windows)]
+        let argv = vec![
+            "cmd.exe".into(), "/D".into(), "/S".into(), "/C".into(),
+            "(echo Traceback ^(most recent call last^): 1>&2) & (echo   File x, line 1 1>&2) & (echo IndexError: list index out of range 1>&2) & exit /b 1".into(),
+        ];
         let p = Pending {
             verb: "test".into(), task: String::new(), attempt: String::new(),
             run_id: String::new(), generated: String::new(), operator: String::new(),
             tpl: vec![], text: None,
-            argv: vec![
-                "/bin/sh".into(), "-c".into(),
-                "echo 'Traceback (most recent call last):' >&2; echo '  File x, line 1' >&2; echo 'IndexError: list index out of range' >&2; exit 1".into(),
-            ],
+            argv,
         };
         let msg = run(&p);
         assert!(msg.contains("IndexError"), "the message line, not the header: {msg}");
         assert!(!msg.contains("Traceback"), "{msg}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_kills_a_hung_producer_group_at_the_deadline() {
         // the whole 8s safety mechanism, kill included, must actually
@@ -514,6 +523,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_survives_a_chatty_producer_and_a_pipe_holding_descendant() {
         // chatty: >64KiB on stdout must neither block nor fail
