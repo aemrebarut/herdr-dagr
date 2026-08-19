@@ -683,7 +683,7 @@ pub fn check(doc: &Doc) -> Report {
                         warn!("W210", &tp, "task {tid} is in review with no attempts — reviewing what?");
                     }
                 }
-                _ => {} // blocked: external fact, no shape constraint
+                _ => {} // blocked/canceled: task-level facts, no attempt constraint
             }
             if matches!(state, "done" | "failed" | "rejected" | "settled_unverified") {
                 for a in &t.attempts {

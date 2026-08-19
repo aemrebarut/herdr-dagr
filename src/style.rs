@@ -53,8 +53,10 @@ pub fn state_color(state: &str) -> u8 {
         "queued" => QUEUED,
         "failed" => FAILED,
         "rejected" => REJECTED,
+        "canceled" => MUTED,
         "settled_unverified" => EV_HEURISTIC,
         "lost" => BLOCKED,
+        "needs_answer" => REVIEW,
         _ => MUTED,
     }
 }
@@ -72,8 +74,10 @@ pub fn state_glyph(state: &str) -> char {
         "review" => '◈',
         "queued" => '○',
         "failed" | "rejected" => '✗',
+        "canceled" => '×',
         "settled_unverified" => '◌',
         "lost" => '?',
+        "needs_answer" => '◈',
         _ => '·',
     }
 }

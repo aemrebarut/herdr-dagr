@@ -70,6 +70,9 @@ on, or what a retry loop is about to spawn. And when an agent says
   loop, one line per attempt, drawn like `git log --graph`.
 - **Keeps large programs legible.** Recursive projects provide one honest
   visual home for each task; dependencies remain free to cross projects.
+- **Shows what can move next.** Queued rows derive `waits ID`, `ready`,
+  `unassigned`, or `needs answer` from ordinary task facts; canceled work
+  stays visible without blocking the rest of the view.
 - **Keeps history honest.** A retry is a new row with a recorded cause
   (who sent it back, why). Nothing moves backward or repaints.
 - **Separates "the agent said done" from "verified".** Every completion
@@ -186,7 +189,7 @@ prompt starters without code or onboarding.
 
 Big runs get noisy, so the tree folds and zooms. `←` replaces the branch
 under the cursor with one `▸ N items` aggregate row; it keeps blocked,
-lost, review, unverified, working, queued, failed, and done counts, so folding never
+lost, review, unverified, working, queued, failed, canceled, and done counts, so folding never
 buries an alarm. `→` unfolds, and on an open branch it zooms: the
 subtree takes over the pane with a breadcrumb up top, and anything
 outside that still needs eyes shows as a `+n need eyes outside`

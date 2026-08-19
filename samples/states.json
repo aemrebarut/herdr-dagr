@@ -219,6 +219,16 @@
       ]
     },
     {
+      "id": "T11",
+      "title": "impl: canceled before start",
+      "kind": "impl",
+      "owner": "dev-11",
+      "state": "canceled",
+      "deps": ["T1"],
+      "note": "superseded by T5",
+      "attempts": []
+    },
+    {
       "id": "G1",
       "title": "gate: waits on live fan-in",
       "kind": "gate",

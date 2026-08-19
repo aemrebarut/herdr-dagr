@@ -20,7 +20,8 @@ pub const CONTRACT_VERSION: u64 = 2;
 pub const CONTRACT_VERSIONS: &[u64] = &[1, 2];
 
 pub const TASK_STATES: &[&str] = &[
-    "queued", "working", "review", "blocked", "done", "failed", "rejected", "settled_unverified",
+    "queued", "working", "review", "blocked", "done", "failed", "rejected", "canceled",
+    "settled_unverified",
 ];
 pub const ATTEMPT_STATES: &[&str] = &[
     "queued", "working", "done", "failed", "rejected", "settled_unverified", "lost",

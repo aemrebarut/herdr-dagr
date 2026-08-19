@@ -65,6 +65,7 @@ fn join_candidates(join: &GateJoin) -> [Vec<Seg>; 3] {
         "queued",
         "failed",
         "rejected",
+        "canceled",
         "settled_unverified",
         "lost",
     ] {
@@ -226,7 +227,10 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
     }
     let model_x = w.saturating_sub(44);
     let st_x = w.saturating_sub(31);
-    let ag_x = w.saturating_sub(21);
+    let ag_x = w
+        .saturating_sub(21)
+        .max(st_x.saturating_add(seg_width(&row.status).min(13) + 1))
+        .min(w.saturating_sub(1));
     let mut l = Line::new(w);
     if row.lit {
         l.put(0, "▍", Style::bold(style::ACCENT));
@@ -427,10 +431,11 @@ fn find_selection<'a>(doc: &'a Doc, key: &str) -> Option<(&'a Task, Option<&'a A
         .iter()
         .find(|t| t.id.as_deref() == Some(key))
         .map(|t| {
-            let last = t
-                .attempts
-                .iter()
-                .max_by_key(|a| a.n.unwrap_or(0));
+            let last = if crate::model::needs_queued_stub(t) {
+                None
+            } else {
+                t.attempts.iter().max_by_key(|a| a.n.unwrap_or(0))
+            };
             (t, last)
         })
 }
@@ -453,7 +458,15 @@ pub fn focus_card(
         .and_then(|a| a.state.as_deref())
         .or(task.state.as_deref())
         .unwrap_or("queued");
-    let state = if matches!(attempt_state, "working" | "queued") {
+    let current_row = attempt.is_none_or(|selected| {
+        task.attempts
+            .iter()
+            .max_by_key(|a| a.n.unwrap_or(0))
+            .is_none_or(|latest| std::ptr::eq(latest, selected))
+    });
+    let state = if task.state.as_deref() == Some("canceled") && current_row {
+        "canceled"
+    } else if matches!(attempt_state, "working" | "queued") {
         task.state
             .as_deref()
             .filter(|state| matches!(*state, "blocked" | "review"))
@@ -1033,7 +1046,7 @@ pub fn help_lines() -> Vec<String> {
         ("z", "fold every settled branch — the trace shows what still needs you · again unfolds"),
         ("g / G", "top · bottom of the trace"),
         ("ctrl-d / ctrl-u", "half a screen down · up"),
-        ("tab", "cycle the attention queue (blocked → review → working)"),
+        ("tab", "cycle attention (blocked → review/questions → working)"),
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("m", "message the orchestrator · Tab picks a starter · text stays editable"),
         ("ctrl-t in message", "toggle explicit authority: return to me ↔ may decide + continue"),
@@ -1053,7 +1066,7 @@ pub fn help_lines() -> Vec<String> {
     }
     out.push(String::new());
     out.push(paint(
-        " grammar: ● done ◎ working ◈ review ■ blocked ○ queued ✗ failed/sent-back ⋈ join ↩ re-entry ⟲ loop-stub » forward-ref",
+        " grammar: ● done ◎ working ◈ review/question ■ blocked ○ queued ✗ failed × canceled ⋈ join ↩ re-entry ⟲ loop-stub » forward-ref",
         Style::dim(style::MUTED),
     ));
     out.push(paint(
@@ -1125,6 +1138,43 @@ mod tests {
                 assert!(h.x0 < h.x1 && h.x1 <= w, "w={w}: hit span sane");
             }
         }
+    }
+
+    #[test]
+    fn full_rows_keep_derived_operator_signals_legible() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "signals"},
+            "tasks": [
+                {"id": "U", "title": "unowned", "kind": "impl", "state": "queued", "deps": [], "attempts": []},
+                {"id": "Q", "title": "choice", "kind": "question", "owner": "operator", "state": "queued", "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+        let scene = model::build(&doc, None, None, None, &model::ViewOpts::default());
+        for (key, signal) in [("U", "unassigned"), ("Q", "needs answer")] {
+            let row = scene.rows.iter().find(|row| row.key == key).unwrap();
+            let rendered = full_row(row, 99, false).0;
+            assert!(rendered.contains(signal), "{signal:?} was truncated: {rendered:?}");
+        }
+    }
+
+    #[test]
+    fn queued_retry_focuses_the_current_task_stub() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "retry"},
+            "tasks": [{
+                "id": "R", "title": "retry", "kind": "impl", "owner": "dev",
+                "state": "queued", "deps": [], "attempts": [
+                    {"id": "R·a1", "n": 1, "state": "failed"}
+                ]
+            }]
+        }))
+        .unwrap();
+        let card = focus_card(&doc, "R", 48, None, &[]).join("\n");
+        assert!(card.contains("R · QUEUED"), "{card}");
+        assert!(!card.contains("attempt 1 · FAILED"), "{card}");
     }
 
     #[test]

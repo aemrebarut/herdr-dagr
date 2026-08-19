@@ -1,6 +1,6 @@
 # The dagr run-state contract — v2
 
-> **Status: v2 (2026-08-17), with v1 read compatibility.** The v1 object
+> **Status: v2 (2026-08-18), with v1 read compatibility.** The v1 object
 > model (§§1–8) remains valid; v2 adds recursive projects, scope-correct gate
 > placement, an orchestrator locator, and correlated operator messages. It is the union
 > of the requirements produced by a field survey of existing orchestration
@@ -57,7 +57,7 @@ Stable identity, independent of any attempt at it.
 - `title`, `owner` (current), `kind` (impl / review / gate / question / …).
 - `project` — optional visual home (§0); omitted means the run root.
 - `state` — projection over its attempts: `queued · working · review ·
-  blocked · done · failed · rejected · settled_unverified`.
+  blocked · done · failed · rejected · canceled · settled_unverified`.
 - `deps` — see §3.
 - Why: universal gap #1. Without this, "the agent finished" and "this
   attempt finished" are the same sentence. A retry must not move a task
@@ -75,9 +75,10 @@ record, and `dagr check` holds the two together (E150):
 | `done` | latest attempt `done` |
 | `failed` | latest attempt `failed` — or `lost` (a dead pane fails the task) |
 | `rejected` | latest attempt `rejected` |
+| `canceled` | no attempt constraint — planned work was withdrawn; existing attempts remain history |
 | `settled_unverified` | latest attempt `settled_unverified` |
 
-Terminal task states: `done · failed · rejected · settled_unverified`.
+Terminal task states: `done · failed · rejected · canceled · settled_unverified`.
 `lost` is an **attempt** state only (the runtime vanished); a task whose
 latest attempt is lost projects to `failed` or `blocked`, and the queue and
 trace surface the lost attempt itself. When both a task state and a live
@@ -110,6 +111,11 @@ attempt is blocked first.
 
 - `deps` — list of task IDs (`»` forward references in the rail; extra-dep
   `⇠` annotations off the primary tree).
+- **Readiness is derived, not authored.** A queued task renders `waits ID`
+  until every dependency is `done`; then it renders `ready` when assigned,
+  `unassigned` without an owner/actor, or `needs answer` when its kind is
+  `question`. A canceled dependency remains unmet; cancel or redirect its
+  dependents rather than treating withdrawal as success.
 - **Fan-in sets are first-class**: a gate's `inputs` carry per-input live
   state so the gate row can render `●◎●→⋈ G2` and name its blocker
   (`waits L5`).
@@ -323,7 +329,7 @@ omit for a run-root child) · `owner` · `note`. Parent edges must be acyclic.
 (`impl|review|test|gate|question|docs|ship|…` — open set) · `owner` ·
 `project` (visual home; omitted = run root) ·
 `state*` (`queued|working|review|blocked|done|failed|rejected|
-settled_unverified`) · `deps[]` (task ids) · `inputs[]` (gates: fan-in set,
+canceled|settled_unverified`) · `deps[]` (task ids) · `inputs[]` (gates: fan-in set,
 defaults to `deps`) · `unblock` (blocked: who) · `note` · `criteria` · `policy` ·
 `attempts[]`.
 

@@ -69,6 +69,20 @@ pub struct FoldChip {
     pub segs: Vec<Seg>,
 }
 
+/// A failed/rejected attempt is immutable history, while the task may be
+/// queued again before its next attempt exists. That valid contract shape
+/// needs a current task stub so readiness can be shown without repainting
+/// the prior attempt.
+pub(crate) fn needs_queued_stub(task: &Task) -> bool {
+    task.state.as_deref() == Some("queued")
+        && task
+            .attempts
+            .iter()
+            .max_by_key(|a| a.n.unwrap_or(0))
+            .and_then(|a| a.state.as_deref())
+            .is_some_and(|state| matches!(state, "failed" | "rejected"))
+}
+
 impl Row {
     fn blank(key: &str, task_id: &str, state: &str) -> Self {
         Row {
@@ -394,6 +408,14 @@ impl<'a> Ix<'a> {
         self.order[ti].last().map(|&ai| NodeRef::A(ti, ai))
     }
 
+    fn current_node(&self, ti: usize) -> NodeRef {
+        if needs_queued_stub(&self.tasks[ti]) {
+            NodeRef::T(ti)
+        } else {
+            self.latest_attempt(ti).unwrap_or(NodeRef::T(ti))
+        }
+    }
+
     /// The dep task's attempt that was current when `started` — the row a
     /// first attempt hangs from.
     fn dep_attempt_at(&self, ti: usize, started: Option<i64>) -> Option<NodeRef> {
@@ -511,13 +533,16 @@ impl<'a> Ix<'a> {
             return None;
         }
         // task stub
+        if needs_queued_stub(task) {
+            return self.latest_attempt(this_ti);
+        }
         if is_gate {
             return None;
         }
         if let Some(dep) = task.deps.first() {
             if let Some(&ti) = self.task_by_id.get(dep.as_str()) {
                 if self.same_project(this_ti, ti) {
-                    return self.latest_attempt(ti).or(Some(NodeRef::T(ti)));
+                    return Some(self.current_node(ti));
                 }
             }
         }
@@ -545,6 +570,9 @@ fn forest(ix: &Ix) -> Forest {
         } else {
             for &ai in &ix.order[ti] {
                 all.push(NodeRef::A(ti, ai));
+            }
+            if needs_queued_stub(t) {
+                all.push(NodeRef::T(ti));
             }
         }
     }
@@ -576,6 +604,16 @@ fn forest(ix: &Ix) -> Forest {
 /// same projection `node_row` draws. Fold summaries and the settled check
 /// ride this, so a fold can never hide what the trace would have shown.
 fn effective_state(ix: &Ix, n: NodeRef) -> String {
+    let ti = ix.task_index(n);
+    let task = ix.task_of(n);
+    // Cancellation is a task-level planning fact, not a fabricated outcome
+    // for an earlier attempt. It replaces only the task's current/latest row;
+    // older attempt rows keep their historical states.
+    if task.state.as_deref() == Some("canceled")
+        && ix.latest_attempt(ti).is_none_or(|latest| latest == n)
+    {
+        return "canceled".to_string();
+    }
     match ix.attempt(n) {
         Some(a) => {
             let st = a.state.as_deref().unwrap_or("queued");
@@ -590,10 +628,48 @@ fn effective_state(ix: &Ix, n: NodeRef) -> String {
     }
 }
 
+/// First declared prerequisite that has not completed successfully. A
+/// terminal failure or cancellation remains unmet: downstream work does not
+/// become ready merely because its blocker stopped.
+fn first_unmet(ix: &Ix, deps: &[String]) -> Option<(String, u8)> {
+    deps.iter().find_map(|dep| {
+        let state = ix
+            .task_by_id
+            .get(dep.as_str())
+            .and_then(|&ti| ix.tasks[ti].state.as_deref())
+            .unwrap_or("queued");
+        (state != "done").then(|| (dep.clone(), style::state_color(state)))
+    })
+}
+
+/// A queued row's operator-facing signal. This is derived entirely from
+/// existing task fields, so producers declare no second readiness state.
+fn queued_status(ix: &Ix, task: &Task, assigned: bool) -> Vec<Seg> {
+    let deps = if task.kind.as_deref() == Some("gate") {
+        task.inputs.as_deref().unwrap_or(&task.deps)
+    } else {
+        &task.deps
+    };
+    if let Some((id, col)) = first_unmet(ix, deps) {
+        return vec![
+            Seg("waits ".into(), Style::dim(style::QUEUED)),
+            Seg(id, Style::bold(col)),
+        ];
+    }
+    if task.kind.as_deref() == Some("question") {
+        return vec![Seg("needs answer".into(), Style::bold(style::REVIEW))];
+    }
+    if assigned {
+        vec![Seg("ready".into(), Style::bold(style::DONE))]
+    } else {
+        vec![Seg("unassigned".into(), Style::bold(style::QUEUED))]
+    }
+}
+
 /// states: [blocked, lost, review, settled_unverified, working, queued,
-/// failed/rejected, done]. The aggregate row names the total; these are the
-/// composition, not a second rendering of the folded root task.
-fn fold_chip(states: &[usize; 8]) -> FoldChip {
+/// failed/rejected, canceled, done]. The aggregate row names the total;
+/// these are the composition, not a second rendering of the folded root task.
+fn fold_chip(states: &[usize; 9]) -> FoldChip {
     let mut segs = Vec::new();
     let mut hot = None;
     let cats = [
@@ -604,7 +680,8 @@ fn fold_chip(states: &[usize; 8]) -> FoldChip {
         ("working", states[4]),
         ("queued", states[5]),
         ("failed", states[6]),
-        ("done", states[7]),
+        ("canceled", states[7]),
+        ("done", states[8]),
     ];
     for (state, count) in cats {
         if count == 0 {
@@ -626,11 +703,14 @@ fn fold_chip(states: &[usize; 8]) -> FoldChip {
 }
 
 /// Row keys of the topmost all-settled subtrees — branches where the node
-/// and every descendant is done/failed/rejected: history, nothing live or
-/// waiting. These are what `z` folds; attention states never fold away.
+/// and every descendant is done/failed/rejected/canceled: history, nothing
+/// live or waiting. These are what `z` folds; attention states never fold away.
 pub fn settled_roots(doc: &Doc) -> Vec<String> {
     fn settled(ix: &Ix, f: &Forest, n: NodeRef) -> bool {
-        matches!(effective_state(ix, n).as_str(), "done" | "failed" | "rejected")
+        matches!(
+            effective_state(ix, n).as_str(),
+            "done" | "failed" | "rejected" | "canceled"
+        )
             && f.children[f.index[&n]].iter().all(|&k| settled(ix, f, k))
     }
     fn collect(ix: &Ix, f: &Forest, n: NodeRef, out: &mut Vec<String>) {
@@ -665,7 +745,7 @@ pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
         .or_else(|| {
             ix.task_by_id
                 .get(key)
-                .map(|&ti| ix.latest_attempt(ti).unwrap_or(NodeRef::T(ti)))
+                .map(|&ti| ix.current_node(ti))
         });
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -720,12 +800,12 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
     // collapsed organizational scope reports its health, so it must not
     // turn failures, lost attempts, or unverified settlements into the
     // reassuring word "settled".
-    let mut counts = [0usize; 8]; // blocked, lost, review, unverified, working, queued, failed, done
+    let mut counts = [0usize; 9]; // blocked, lost, review, unverified, working, queued, failed, canceled, done
     for ti in 0..ix.tasks.len() {
         if !ix.project_is_within(ix.task_project(ti), pi) {
             continue;
         }
-        let node = ix.latest_attempt(ti).unwrap_or(NodeRef::T(ti));
+        let node = ix.current_node(ti);
         match effective_state(ix, node).as_str() {
             "blocked" => counts[0] += 1,
             "lost" => counts[1] += 1,
@@ -734,7 +814,8 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
             "working" => counts[4] += 1,
             "queued" => counts[5] += 1,
             "failed" | "rejected" => counts[6] += 1,
-            _ => counts[7] += 1,
+            "canceled" => counts[7] += 1,
+            _ => counts[8] += 1,
         }
     }
     let specs = [
@@ -745,7 +826,8 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
         (4, "working", style::WORKING),
         (5, "queued", style::QUEUED),
         (6, "failed", style::FAILED),
-        (7, "done", style::DONE),
+        (7, "canceled", style::MUTED),
+        (8, "done", style::DONE),
     ];
     for (idx, label, color) in specs {
         if counts[idx] > 0 {
@@ -776,6 +858,8 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
         "working"
     } else if counts[5] > 0 {
         "queued"
+    } else if counts[7] > 0 {
+        "canceled"
     } else {
         "done"
     };
@@ -884,7 +968,7 @@ pub fn build(
         }
         /// Mark a folded-away subtree as covered while tallying what the
         /// fold hides — count and attention states, for the ▸ chip.
-        fn tally(state: &str, states: &mut [usize; 8]) {
+        fn tally(state: &str, states: &mut [usize; 9]) {
             match state {
                 "blocked" => states[0] += 1,
                 "lost" => states[1] += 1,
@@ -893,10 +977,11 @@ pub fn build(
                 "working" => states[4] += 1,
                 "queued" => states[5] += 1,
                 "failed" | "rejected" => states[6] += 1,
-                _ => states[7] += 1,
+                "canceled" => states[7] += 1,
+                _ => states[8] += 1,
             }
         }
-        fn consume(&mut self, n: NodeRef, hidden: &mut usize, states: &mut [usize; 8]) {
+        fn consume(&mut self, n: NodeRef, hidden: &mut usize, states: &mut [usize; 9]) {
             for k in self.children[self.pos(n)].clone() {
                 if !self.covered.insert(self.ix.key_of(k)) {
                     continue;
@@ -949,7 +1034,7 @@ pub fn build(
             // alarm visible — a fold must never hide a blocked row silently
             if !kids.is_empty() && self.folded.contains(&key) {
                 let mut hidden = 0usize;
-                let mut states = [0usize; 8];
+                let mut states = [0usize; 9];
                 Self::tally(&effective_state(self.ix, n), &mut states);
                 self.consume(n, &mut hidden, &mut states);
                 let row = self.rows.last_mut().expect("row just pushed");
@@ -1120,7 +1205,7 @@ pub fn build(
             // light gates this selection feeds, and » refs naming it
             for (ti, t) in tasks.iter().enumerate() {
                 let gate = t.kind.as_deref() == Some("gate");
-                let unmet = t.state.as_deref() != Some("done");
+                let unmet = !matches!(t.state.as_deref(), Some("done" | "canceled"));
                 let inputs = t.inputs.clone().unwrap_or_else(|| t.deps.clone());
                 if gate && unmet && inputs.iter().any(|i| i == sel_tid) {
                     let gid = tasks[ti].id.as_deref().unwrap_or("");
@@ -1138,13 +1223,16 @@ pub fn build(
         }
     }
 
-    // attention queue: blocked → lost → review → working
+    // attention queue: blocked → lost/unverified → review/question → working.
+    // Readiness and assignment stay on rows; only a human question joins the
+    // attention queue, otherwise a large unstarted plan would become noise.
     let rank = |s: &str| match s {
         "blocked" => 0,
         "lost" => 1,
         "settled_unverified" => 2,
         "review" => 3,
-        "working" => 4,
+        "needs_answer" => 4,
+        "working" => 5,
         _ => 9,
     };
     let mut queue: Vec<QueueItem> = tasks
@@ -1156,10 +1244,19 @@ pub fn build(
                 .and_then(|&ti| ix.order[ti].last().map(|&ai| &t.attempts[ai]));
             // attention state: `lost` and `settled_unverified` are attempt
             // facts — project the latest attempt's alarm over the task state
-            let state = match last.and_then(|a| a.state.as_deref()) {
-                Some(s @ ("lost" | "settled_unverified")) => s.to_string(),
-                _ => t.state.as_deref().unwrap_or("").to_string(),
+            let mut state = match t.state.as_deref() {
+                Some("canceled") => "canceled".to_string(),
+                _ => match last.and_then(|a| a.state.as_deref()) {
+                    Some(s @ ("lost" | "settled_unverified")) => s.to_string(),
+                    _ => t.state.as_deref().unwrap_or("").to_string(),
+                },
             };
+            if state == "queued"
+                && t.kind.as_deref() == Some("question")
+                && first_unmet(&ix, &t.deps).is_none()
+            {
+                state = "needs_answer".to_string();
+            }
             if rank(&state) >= 9 {
                 return None;
             }
@@ -1175,7 +1272,9 @@ pub fn build(
             };
             let who = match state.as_str() {
                 "blocked" => format!("→ {}", t.unblock.as_deref().unwrap_or("?")),
-                "review" => format!("→ {}", t.owner.as_deref().unwrap_or("?")),
+                "review" | "needs_answer" => {
+                    format!("→ {}", t.owner.as_deref().unwrap_or("?"))
+                }
                 _ => t.owner.clone().unwrap_or_default(),
             };
             QueueItem {
@@ -1208,7 +1307,10 @@ pub fn build(
             .iter()
             .filter(|q| !keep.contains(&q.task_id))
             .filter(|q| {
-                matches!(q.state.as_str(), "blocked" | "lost" | "review" | "settled_unverified")
+                matches!(
+                    q.state.as_str(),
+                    "blocked" | "lost" | "review" | "needs_answer" | "settled_unverified"
+                )
             })
             .count();
         queue.retain(|q| keep.contains(&q.task_id));
@@ -1296,6 +1398,11 @@ fn node_row(
             "settled_unverified" => {
                 row.status = vec![Seg("unverified".into(), Style::fg(style::EV_HEURISTIC))];
             }
+            "queued" => {
+                let assigned = a.actor.as_deref().is_some_and(|actor| !actor.is_empty())
+                    || task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
+                row.status = queued_status(ix, task, assigned);
+            }
             _ => {
                 row.status = vec![Seg("queued".into(), Style::dim(style::QUEUED))];
             }
@@ -1344,6 +1451,16 @@ fn node_row(
                 }
             }
         }
+        if task.state.as_deref() == Some("canceled")
+            && ix.latest_attempt(ix.task_index(n)) == Some(n)
+        {
+            row.state = "canceled".into();
+            row.glyph = style::state_glyph("canceled");
+            row.glyph_color = style::state_color("canceled");
+            row.hot = false;
+            row.title_dim = true;
+            row.status = vec![Seg("canceled".into(), Style::dim(style::MUTED))];
+        }
     } else {
         // task stub (no attempts yet)
         let st = task.state.as_deref().unwrap_or("queued");
@@ -1352,7 +1469,7 @@ fn node_row(
         row.glyph_color = style::state_color(st);
         row.agent = task.owner.clone().unwrap_or_default();
         row.hot = matches!(st, "blocked" | "review");
-        row.title_dim = st == "queued";
+        row.title_dim = matches!(st, "queued" | "canceled");
         match st {
             "blocked" => {
                 row.status = vec![
@@ -1372,6 +1489,13 @@ fn node_row(
                     ),
                 ];
             }
+            "canceled" => {
+                row.status = vec![Seg("canceled".into(), Style::dim(style::MUTED))];
+            }
+            "queued" => {
+                let assigned = task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
+                row.status = queued_status(ix, task, assigned);
+            }
             _ => {
                 row.status = vec![Seg("queued".into(), Style::dim(style::QUEUED))];
             }
@@ -1385,30 +1509,19 @@ fn node_row(
         let inputs = task.inputs.clone().unwrap_or_else(|| task.deps.clone());
         if !inputs.is_empty() {
             let mut states = Vec::with_capacity(inputs.len());
-            let mut first_unmet: Option<(String, u8)> = None;
             for input in &inputs {
                 let ist = ix
                     .task_by_id
                     .get(input.as_str())
                     .and_then(|&ti| ix.tasks[ti].state.as_deref())
                     .unwrap_or("queued");
-                let col = style::state_color(ist);
-                let donei = ist == "done";
                 states.push(ist.to_string());
-                if !donei && first_unmet.is_none() {
-                    first_unmet = Some((input.clone(), col));
-                }
             }
             row.join = Some(GateJoin { states });
             row.glyph = '⋈';
-            if ix.attempt(n).is_none() {
-                row.status = match first_unmet {
-                    None => vec![Seg("ready".into(), Style::bold(style::DONE))],
-                    Some((id, col)) => vec![
-                        Seg("waits ".into(), Style::dim(style::QUEUED)),
-                        Seg(id, Style::bold(col)),
-                    ],
-                };
+            if ix.attempt(n).is_none() && row.state == "queued" {
+                let assigned = task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
+                row.status = queued_status(ix, task, assigned);
             }
         }
     }
@@ -1553,10 +1666,10 @@ fn fanin_rows(ix: &Ix, task: &Task, prefix: &str) -> Vec<Row> {
         let ist = it.state.as_deref().unwrap_or("queued");
         let met = ist == "done";
         let lead = if i == inputs.len() - 1 { '╰' } else { '├' };
-        let latest = ix.latest_attempt(ti);
-        let name = latest.map(|n| ix.display_name(n)).unwrap_or_else(|| input.clone());
-        let ev = latest
-            .and_then(|n| ix.attempt(n))
+        let current = ix.current_node(ti);
+        let name = ix.display_name(current);
+        let ev = ix
+            .attempt(current)
             .and_then(|a| a.outcome.as_ref())
             .and_then(|o| o.evidence.as_deref());
         let mut row = Row::blank(&format!("{tid}←{input}"), tid, "ref");
@@ -1852,6 +1965,7 @@ mod tests {
                 {"id": "F", "title": "failed", "project": "P", "state": "failed", "deps": [], "attempts": []},
                 {"id": "U", "title": "unverified", "project": "P", "state": "settled_unverified", "deps": [],
                  "attempts": [{"id": "U·a1", "n": 1, "state": "settled_unverified"}]},
+                {"id": "C", "title": "canceled", "project": "P", "state": "canceled", "deps": [], "attempts": []},
                 {"id": "D", "title": "done", "project": "P", "state": "done", "deps": [], "attempts": []}
             ]
         }))
@@ -1863,6 +1977,7 @@ mod tests {
         assert!(status.contains("1 lost"), "{status}");
         assert!(status.contains("1 failed"), "{status}");
         assert!(status.contains("1 unverified"), "{status}");
+        assert!(status.contains("1 canceled"), "{status}");
         assert!(status.contains("1 done"), "{status}");
         assert_eq!(project.state, "lost");
         assert!(project.hot);
@@ -1908,6 +2023,19 @@ mod tests {
             assert_eq!(gate.glyph_color, expected_color);
             assert_eq!(gate.status.first().map(|s| s.0.as_str()), Some(status_word));
         }
+
+        let canceled = queued_tasks(serde_json::json!([
+            {"id": "A", "title": "input", "state": "done", "deps": [], "attempts": [
+                {"id": "A·a1", "n": 1, "state": "done"}
+            ]},
+            {"id": "G", "title": "withdrawn join", "kind": "gate",
+             "state": "canceled", "deps": ["A"], "attempts": []}
+        ]));
+        let scene = build(&canceled, None, None, None, &ViewOpts::default());
+        let gate = scene.rows.iter().find(|r| r.name == "G").expect("gate row");
+        assert_eq!(gate.glyph, '⋈');
+        assert_eq!(gate.glyph_color, style::MUTED);
+        assert_eq!(gate.status.first().map(|s| s.0.as_str()), Some("canceled"));
     }
 
     #[test]
@@ -1933,6 +2061,102 @@ mod tests {
 
         let scene = build(&doc, None, None, None, &ViewOpts::default());
         assert_eq!(keys(&scene), ["R", "Z-first", "A-second"]);
+    }
+
+    #[test]
+    fn queued_signals_are_derived_from_existing_task_facts() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "D", "title": "done", "kind": "impl", "state": "done", "deps": [],
+             "attempts": [{"id": "D·a1", "n": 1, "state": "done"}]},
+            {"id": "R", "title": "ready", "kind": "impl", "owner": "dev",
+             "state": "queued", "deps": ["D"], "attempts": []},
+            {"id": "W", "title": "waiting", "kind": "impl", "owner": "dev",
+             "state": "queued", "deps": ["R"], "attempts": []},
+            {"id": "U", "title": "unassigned", "kind": "impl",
+             "state": "queued", "deps": ["D"], "attempts": []},
+            {"id": "Q", "title": "choose", "kind": "question", "owner": "operator",
+             "state": "queued", "deps": ["D"], "attempts": []},
+            {"id": "C", "title": "withdrawn", "kind": "impl",
+             "state": "canceled", "deps": ["D"], "attempts": []},
+            {"id": "X", "title": "still blocked", "kind": "impl", "owner": "dev",
+             "state": "queued", "deps": ["C"], "attempts": []},
+            {"id": "G", "title": "unowned join", "kind": "gate",
+             "state": "queued", "deps": [], "inputs": ["D"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let status = |key: &str| {
+            scene.rows
+                .iter()
+                .find(|row| row.key == key)
+                .unwrap()
+                .status
+                .iter()
+                .map(|seg| seg.0.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(status("R"), "ready");
+        assert_eq!(status("W"), "waits R");
+        assert_eq!(status("U"), "unassigned");
+        assert_eq!(status("Q"), "needs answer");
+        assert_eq!(status("X"), "waits C", "cancellation is not success");
+        assert_eq!(status("G"), "unassigned", "gates use the same assignment rule");
+        assert_eq!(scene.queue.len(), 1, "only questions enter attention");
+        assert_eq!(scene.queue[0].task_id, "Q");
+        assert_eq!(scene.queue[0].state, "needs_answer");
+    }
+
+    #[test]
+    fn cancellation_replaces_only_the_latest_attempt_row() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "C", "title": "withdrawn", "kind": "impl", "state": "canceled",
+             "deps": [], "attempts": [
+                {"id": "C·a1", "n": 1, "state": "done"},
+                {"id": "C·a2", "n": 2, "state": "lost",
+                 "cause": {"type": "followup", "ref": "C·a1"}}
+             ]}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let first = scene.rows.iter().find(|row| row.key == "C·a1").unwrap();
+        let latest = scene.rows.iter().find(|row| row.key == "C·a2").unwrap();
+        assert_eq!((first.state.as_str(), first.glyph), ("done", '●'));
+        assert_eq!((latest.state.as_str(), latest.glyph), ("canceled", '×'));
+        assert!(scene.queue.is_empty(), "canceled work is terminal, not a lost alarm");
+        assert_eq!(settled_roots(&doc), ["C·a1"]);
+    }
+
+    #[test]
+    fn a_queued_retry_gets_a_current_stub_without_repainting_history() {
+        let doc = queued_tasks(serde_json::json!([
+            {"id": "D", "title": "foundation", "kind": "impl", "state": "done",
+             "deps": [], "attempts": [{"id": "D·a1", "n": 1, "state": "done"}]},
+            {"id": "R", "title": "retry", "kind": "impl", "owner": "dev",
+             "state": "queued", "deps": ["D"], "attempts": [
+                {"id": "R·a1", "n": 1, "state": "failed"}
+             ]},
+            {"id": "X", "title": "downstream", "kind": "impl", "owner": "dev",
+             "state": "queued", "deps": ["R"], "attempts": []}
+        ]));
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(keys(&scene), ["D·a1", "R·a1", "R", "X"]);
+        let failed = scene.rows.iter().find(|row| row.key == "R·a1").unwrap();
+        let current = scene.rows.iter().find(|row| row.key == "R").unwrap();
+        let downstream = scene.rows.iter().find(|row| row.key == "X").unwrap();
+        assert_eq!((failed.state.as_str(), failed.glyph), ("failed", '✗'));
+        assert_eq!((current.state.as_str(), current.glyph), ("queued", '○'));
+        assert_eq!(current.parent.as_deref(), Some("R·a1"));
+        assert_eq!(downstream.parent.as_deref(), Some("R"));
+        assert_eq!(
+            current.status.iter().map(|seg| seg.0.as_str()).collect::<String>(),
+            "ready"
+        );
+        assert_eq!(
+            downstream.status.iter().map(|seg| seg.0.as_str()).collect::<String>(),
+            "waits R"
+        );
+        assert!(settled_roots(&doc).is_empty(), "queued retry prevents auto-fold");
     }
 
     #[test]

@@ -6,10 +6,9 @@ description: Emit and maintain a dagr run file — a live, contract-valid JSON d
 # dagr producer — write the run, prove the run
 
 You are the **producer**: the single writer of a run file that `dagr view`
-renders live. dagr is a *representation kernel* — it draws exactly what you
-assert and nothing else. If you don't write a fact, it doesn't exist on
-screen; if you write a wrong fact, it is wrong on screen. There is no
-inference layer to save you.
+renders live. dagr is a *representation kernel*: you assert task truth, and
+it derives only defined view signals from those facts. Missing or wrong facts
+still produce a missing or wrong graph; there is no workflow engine to repair it.
 
 Contract version: **`"dagr": 2`** (v1 files remain readable; write v2 for new runs).
 
@@ -74,7 +73,7 @@ workflow gets its own run file and its own pane.
   ship · …` — pick the honest one (`question` for a task that exists to be
   answered by a human, `gate` for fan-ins; both change how dagr draws it).
   States: `queued · working · review · blocked · done · failed · rejected ·
-  settled_unverified`.
+  canceled · settled_unverified`.
 - **Attempt** = one try at a task. `id` styled `T·aN`, 1-based `n`.
   States: `queued · working · done · failed · rejected ·
   settled_unverified · lost`. **A retry never rewrites an attempt — it
@@ -99,7 +98,8 @@ workflow gets its own run file and its own pane.
    `lost`; `queued` forbids a working attempt, and forbids a latest
    attempt of `done` or `settled_unverified` — a task re-queued after a
    `failed` or `rejected` attempt is correct and expected; `review` needs
-   at least one attempt.
+   at least one attempt. `canceled` is task-only: it withdraws planned work
+   without rewriting or inventing an attempt.
 2. **Causes point backward in time**: attempt n>1 carries
    `cause` (`sent_back · gate_failed · followup · superseded`) whose `ref`
    names an *earlier* attempt. `initial` only for n=1.
@@ -180,6 +180,12 @@ A task in `API` uses `"project": "API"`. If a UI task depends on it, keep
 the UI task in `UI` and put the API task id in its `deps`; the renderer shows
 the cross-project edge. Do not duplicate the task or force it into the
 common parent. Omit `project` only for genuinely run-level work.
+
+Start coarse: declare the useful project skeleton, immediate work, and
+meaningful gates. Add discovered tasks as they become relevant; publish
+operator-visible work, not every internal agent, tool, or runtime step.
+Dagr derives queued-row `waits`, `ready`, `unassigned`, and `needs answer`
+from `deps`, `owner`/`actor`, and `kind`; never encode those as extra fields.
 
 ### Open a task and start its first attempt
 
@@ -298,8 +304,15 @@ timestamp**, like every event:
 at `working`/`done` needs its **own attempt** in that state — open
 `G1·a1` (with locator + liveness if live) when the gate's work starts,
 and settle it with evidence like any other attempt. A gate with
-`attempts: []` can only be `queued`. Complete document:
+`attempts: []` can be `queued`, or `canceled` when the gate was withdrawn.
+Complete document:
 [`examples/04-gate-promotion.json`](examples/04-gate-promotion.json).
+
+### Cancel planned work
+
+Set the task to `"state": "canceled"` and give a short `note`; keep all prior
+attempts and events unchanged. There is no canceled attempt outcome. Because
+cancellation is not success, update or cancel any task that still depends on it.
 
 ### Declare loop policy (futures), don't imply it
 
@@ -356,6 +369,8 @@ log; chat prose is not.
 
 ### Answer a question (settle a task by directive)
 
+A queued `question` whose dependencies are done appears as `needs answer` in
+the attention queue; the producer declares no separate readiness field.
 A directive event alone cannot settle a task — task state is a
 projection over **attempts**, so the human's answer needs an
 attempt whose actor is the human. Write both in the same candidate:
@@ -470,6 +485,8 @@ the record.
   evidence after the fact without a new event explaining why.
 - Don't encode task state from herdr's view of the world (pane alive ≠
   work done). herdr is *where*, the contract is *what is true*.
+- Don't mirror every internal agent/tool step; include work an operator needs
+  to understand, steer, or verify.
 - Don't hand-compute "% complete" — write per-attempt `progress`
   (`{"done": 3, "total": 7, "note": "..."}`) and timestamps; analytics are
   queries over those.

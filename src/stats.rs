@@ -51,7 +51,7 @@ pub struct Flow {
 }
 
 fn is_settled(state: &str) -> bool {
-    matches!(state, "done" | "failed" | "rejected" | "settled_unverified")
+    matches!(state, "done" | "failed" | "rejected" | "canceled" | "settled_unverified")
 }
 
 /// Attempt states whose started→ended span is a real work duration.

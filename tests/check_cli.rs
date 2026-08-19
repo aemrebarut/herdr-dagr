@@ -170,6 +170,21 @@ fn bad_task_state_is_e112() {
 }
 
 #[test]
+fn canceled_is_a_task_level_state_with_or_without_history() {
+    let mut with_history = base();
+    with_history["tasks"][0]["state"] = serde_json::json!("canceled");
+    let (code, findings) = run_check(&with_history.to_string());
+    assert_eq!(code, 0, "historical attempts remain valid: {findings:?}");
+    assert!(findings.is_empty(), "{findings:?}");
+
+    let mut before_start = with_history;
+    before_start["tasks"][0]["attempts"] = serde_json::json!([]);
+    let (code, findings) = run_check(&before_start.to_string());
+    assert_eq!(code, 0, "cancel-before-start is valid: {findings:?}");
+    assert!(findings.is_empty(), "{findings:?}");
+}
+
+#[test]
 fn dangling_dep_is_e120() {
     let mut d = base();
     d["tasks"][0]["deps"] = serde_json::json!(["NOPE"]);
@@ -529,7 +544,8 @@ fn stats_reports_flow_over_the_state_matrix() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["wip"], 2, "T2 and T10 are the working tasks: {v}");
     assert!(v["critical_path"].as_array().is_some_and(|p| !p.is_empty()));
-    assert!(v["tasks"].as_array().is_some_and(|t| t.len() == 12));
+    assert_eq!(v["settled"], 6, "canceled is terminal for flow stats: {v}");
+    assert!(v["tasks"].as_array().is_some_and(|t| t.len() == 13));
 }
 
 fn run_stats(doc: &serde_json::Value) -> serde_json::Value {
@@ -802,6 +818,15 @@ fn blocked_and_review_outrank_working_attempts() {
         strip_ansi(&selected).contains("T4·a1 · attempt 1 · BLOCKED"),
         "focus card must use the same effective state as the row:\n{selected}"
     );
+}
+
+#[test]
+fn canceled_renders_as_terminal_task_truth() {
+    let (_, out) = run_snapshot(STATES, &["--width", "200", "--select", "T11"]);
+    let plain = strip_ansi(&out);
+    let row = plain.lines().find(|l| l.contains("× T11")).expect("canceled row");
+    assert!(row.contains("canceled"), "{row:?}");
+    assert!(plain.contains("T11 · CANCELED"), "focus card agrees with row:\n{plain}");
 }
 
 #[test]
