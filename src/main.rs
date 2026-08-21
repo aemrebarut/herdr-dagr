@@ -1,9 +1,8 @@
 //! dagr — a live DAG of your agent swarm, as a herdr plugin.
 //!
-//! `dagr check` lints a run-state document against CONTRACT.md v1,
+//! `dagr check` lints a run-state document against CONTRACT.md v3,
 //! `dagr view` draws it, `dagr stats` reports flow analytics over it.
 
-mod action;
 mod check;
 mod contract;
 mod herdr;
@@ -11,6 +10,7 @@ mod message;
 mod model;
 mod picker;
 mod render;
+mod scale;
 mod select;
 mod stats;
 mod style;
@@ -63,7 +63,7 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("--version" | "-V") => {
-            println!("dagr {} (contract v2; reads v1)", env!("CARGO_PKG_VERSION"));
+            println!("dagr {} (contract v3; reads v1/v2)", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
         _ => {
@@ -122,6 +122,13 @@ fn cmd_view(args: &[String]) -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+    }
+    if width.is_some_and(|width| width > scale::MAX_FRAME_WIDTH) {
+        eprintln!(
+            "dagr view: --width exceeds the {} column limit",
+            scale::MAX_FRAME_WIDTH
+        );
+        return ExitCode::from(2);
     }
     let path = path.unwrap_or_else(discover_run_file);
     view::run(view::ViewArgs { path, snapshot, width, select })
@@ -199,10 +206,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let raw = match std::fs::read_to_string(path) {
+    let raw = match scale::read_limited(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("dagr check: cannot read {path}: {e}");
+            eprintln!("dagr check: {e}");
             return ExitCode::from(2);
         }
     };
@@ -226,6 +233,20 @@ fn cmd_check(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+
+    if let Err(msg) = scale::enforce_document(&doc) {
+        if json_out {
+            println!(
+                "{}",
+                serde_json::json!([{
+                    "level": "error", "code": "E002", "path": path, "msg": msg,
+                }])
+            );
+        } else {
+            println!("ERROR   E002 {path} — {msg}");
+        }
+        return ExitCode::from(1);
+    }
 
     let report = check::check(&doc);
 

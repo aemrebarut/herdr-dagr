@@ -140,7 +140,21 @@ if (-not (Test-Path -LiteralPath $SourceBin -PathType Leaf)) {
 }
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 $InstalledBin = Join-Path $BinDir 'dagr.exe'
-Copy-Item -LiteralPath $SourceBin -Destination $InstalledBin -Force
+$StagedBin = Join-Path $BinDir ('.dagr-install-' + [System.Guid]::NewGuid().ToString('N') + '.exe')
+try {
+    Copy-Item -LiteralPath $SourceBin -Destination $StagedBin
+    if (Test-Path -LiteralPath $InstalledBin -PathType Leaf) {
+        [System.IO.File]::Replace($StagedBin, $InstalledBin, $null)
+    } elseif (Test-Path -LiteralPath $InstalledBin) {
+        throw "${Name}: refusing to replace a non-file install target: $InstalledBin"
+    } else {
+        [System.IO.File]::Move($StagedBin, $InstalledBin)
+    }
+} finally {
+    if (Test-Path -LiteralPath $StagedBin) {
+        Remove-Item -LiteralPath $StagedBin -Force -ErrorAction SilentlyContinue
+    }
+}
 Clear-DagrTemp
 [Console]::Out.WriteLine("${Name}: installed $InstalledBin")
 exit 0

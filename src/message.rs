@@ -206,6 +206,7 @@ pub struct Draft {
     pub text: String,
     pub authority: Authority,
     pub starter: usize,
+    pub starter_id: String,
     base: String,
 }
 
@@ -219,6 +220,7 @@ impl Draft {
             text: format!("{base}\n"),
             authority: picked.authority,
             starter: idx,
+            starter_id: picked.id,
             base,
         }
     }
@@ -282,6 +284,7 @@ pub struct Submission {
 pub struct Summary {
     pub id: String,
     pub target: String,
+    pub starter: String,
     pub text: String,
     pub authority: Authority,
     pub status: String,
@@ -327,9 +330,15 @@ pub fn read_summaries(run_path: &Path, run_id: Option<&str>) -> Result<Vec<Summa
                 Summary {
                     id: id.to_string(),
                     target: value
-                        .get("target")
+                        .get("task")
+                        .or_else(|| value.get("target"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
+                        .to_string(),
+                    starter: value
+                        .get("starter")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("legacy")
                         .to_string(),
                     text: value
                         .get("text")
@@ -413,16 +422,35 @@ fn envelope_field(value: &str) -> String {
         .collect()
 }
 
+/// A draft may only target the same unambiguous task identity that the TUI
+/// can select. Re-check at submission because the run can reload while the
+/// composer is open.
+pub(crate) fn unique_task_target(doc: &Doc, target: &str) -> bool {
+    if !crate::contract::valid_identity(target) {
+        return false;
+    }
+    let tasks = doc.tasks.as_deref().unwrap_or(&[]);
+    let task_matches = tasks.iter().filter(|task| task.id.as_deref() == Some(target)).count();
+    let attempt_collision = tasks
+        .iter()
+        .flat_map(|task| task.attempts.iter())
+        .any(|attempt| attempt.id.as_deref() == Some(target));
+    let project_row_collision = doc.projects.iter().any(|project| {
+        project.id.as_deref().is_some_and(|id| format!("project:{id}") == target)
+    });
+    task_matches == 1 && !attempt_collision && !project_row_collision
+}
+
 /// Persist the immutable raw intent before returning work that may be sent.
 pub fn prepare(
     run_path: &Path,
     doc: &Doc,
     target: &str,
+    starter: &str,
     text: &str,
     authority: Authority,
 ) -> Result<Submission, String> {
-    let text = text.trim();
-    if text.is_empty() {
+    if text.trim().is_empty() {
         return Err("message is empty".into());
     }
     if text.len() > MESSAGE_LIMIT {
@@ -434,15 +462,9 @@ pub fn prepare(
         .as_deref()
         .filter(|id| !id.is_empty())
         .ok_or_else(|| "run.id is missing".to_string())?;
-    if !doc
-        .tasks
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .any(|task| task.id.as_deref() == Some(target))
-    {
+    if !unique_task_target(doc, target) {
         return Err(format!(
-            "task {target:?} is no longer in this run — re-select a current row"
+            "task {target:?} is no longer in this run as one unique valid target — re-select a current row"
         ));
     }
     let locator = run.orchestrator.as_ref().ok_or_else(|| {
@@ -456,8 +478,15 @@ pub fn prepare(
     } else {
         return Err("run.orchestrator names neither pane nor agent".into());
     };
+    if starter.trim().is_empty() {
+        return Err("message starter is missing".into());
+    }
     let queued_at_ms = millis();
-    let revision = doc.generated_at.as_deref().unwrap_or("unknown");
+    let revision = doc
+        .generated_at
+        .as_deref()
+        .filter(|revision| !revision.is_empty())
+        .ok_or_else(|| "generated_at is missing — cannot record the document revision".to_string())?;
     let sequence = MESSAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let hash = fnv64(&[
         run_id.as_bytes(),
@@ -476,17 +505,19 @@ pub fn prepare(
         "queued_at_ms": queued_at_ms,
         "run": run_id,
         "revision": revision,
-        "target": target,
+        "task": target,
+        "starter": starter,
         "authority": authority,
         "text": text,
         "destination": {"kind": destination.kind(), "target": destination.target()},
     });
     append_json(&journal, &record)?;
     let envelope = format!(
-        "[DAGR OPERATOR MESSAGE]\nmessage_id: {id}\nrun: {}\nrevision: {}\ntarget: {}\nauthority: {}\n\n{text}\n\nAcknowledge this message. Preserve message_id in any resolution event you append to the run file.",
+        "[DAGR OPERATOR MESSAGE]\nmessage_id: {id}\nrun: {}\nrevision: {}\ntarget: {}\nstarter: {}\nauthority: {}\n\n{text}\n\nAcknowledge this message. Preserve message_id in any resolution event you append to the run file.",
         envelope_field(run_id),
         envelope_field(revision),
         envelope_field(target),
+        envelope_field(starter),
         match authority {
             Authority::Recommend => "recommend_and_return",
             Authority::Decide => "may_decide_and_continue",
@@ -504,7 +535,14 @@ pub fn prepare(
 /// Queue through Herdr, then append a delivery receipt. A failed transport
 /// never erases the already-recorded operator intent.
 pub fn deliver(submission: Submission) -> String {
-    let result = crate::herdr::prompt(submission.destination.target(), &submission.envelope);
+    deliver_with(submission, crate::herdr::prompt)
+}
+
+fn deliver_with(
+    submission: Submission,
+    prompt: impl FnOnce(&str, &str) -> Result<(), String>,
+) -> String {
+    let result = prompt(submission.destination.target(), &submission.envelope);
     let (kind, detail) = match result {
         Ok(()) => ("message_delivered", None),
         Err(e) => ("message_delivery_failed", Some(e)),
@@ -568,6 +606,10 @@ mod tests {
         assert!(loaded.warning.is_none());
         assert_eq!(loaded.starters.len(), 4);
         assert_eq!(loaded.starters[1].label, "Council");
+        let draft = Draft::from_starter("G1".into(), &loaded.starters, 1);
+        assert_eq!(draft.starter_id, "get-guidance");
+        assert_eq!(draft.text, "Ask two reviewers.\n");
+        assert_eq!(draft.authority, Authority::Recommend);
         let _ = std::fs::remove_dir_all(run.parent().unwrap());
     }
 
@@ -596,32 +638,52 @@ mod tests {
         assert!(draft.text.starts_with(&starters[1].prompt));
         assert!(draft.text.ends_with("Use sol5.6 max and one independent reviewer."));
         assert_eq!(draft.authority, Authority::Recommend);
+        assert_eq!(draft.starter_id, "get-guidance");
     }
 
     #[test]
-    fn prepare_journals_raw_text_before_delivery() {
+    fn composer_submission_delivers_once_and_persists_the_exact_resolution() {
         let run_path = temp_run("journal");
         let doc: Doc = serde_json::from_str(
-            r#"{"dagr":2,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"generated_at":"2026-08-17T01:02:03Z","tasks":[{"id":"G1"}]}"#,
+            r#"{"dagr":3,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"generated_at":"2026-08-17T01:02:03Z","tasks":[{"id":"G1"}]}"#,
         )
         .unwrap();
+        let mut draft = Draft::from_starter("G1".into(), &defaults(), 1);
+        draft.text.push_str("Use sol5.6 max, high reasoning, and two independent agents.  \n");
+        let exact_text = draft.text.clone();
         let sub = prepare(
             &run_path,
             &doc,
-            "G1",
-            "Ask sol and fable independently.",
-            Authority::Recommend,
+            &draft.target,
+            &draft.starter_id,
+            &draft.text,
+            draft.authority,
         )
         .unwrap();
+        let id = sub.id.clone();
+        let status = deliver_with(sub, |target, envelope| {
+            assert_eq!(target, "wX:p1");
+            assert!(envelope.contains("target: G1"));
+            assert!(envelope.contains("authority: recommend_and_return"));
+            assert!(envelope.contains(&exact_text));
+            Ok(())
+        });
+        assert_eq!(status, format!("queued {id} to orchestrator"));
+
         let raw = std::fs::read_to_string(journal_path(&run_path)).unwrap();
-        assert!(raw.contains(&sub.id));
-        assert!(raw.contains("Ask sol and fable independently."));
-        assert!(raw.contains("\"authority\":\"recommend\""));
-        append_json(
-            &journal_path(&run_path),
-            &serde_json::json!({"type":"message_delivered","id":sub.id,"run":"r","at_ms":42}),
-        )
-        .unwrap();
+        let records: Vec<serde_json::Value> = raw
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(records.len(), 2, "one intent and one delivery receipt: {raw}");
+        assert_eq!(records[0]["type"], "message_queued");
+        assert_eq!(records[0]["run"], "r");
+        assert_eq!(records[0]["task"], "G1");
+        assert_eq!(records[0]["revision"], "2026-08-17T01:02:03Z");
+        assert_eq!(records[0]["starter"], "get-guidance");
+        assert_eq!(records[0]["authority"], "recommend");
+        assert_eq!(records[0]["text"], exact_text);
+        assert_eq!(records[1]["type"], "message_delivered");
         append_json(
             &journal_path(&run_path),
             &serde_json::json!({
@@ -634,6 +696,7 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].status, "delivered");
         assert_eq!(summaries[0].target, "G1");
+        assert_eq!(summaries[0].starter, "get-guidance");
         let _ = std::fs::remove_dir_all(run_path.parent().unwrap());
     }
 
@@ -641,13 +704,28 @@ mod tests {
     fn prepare_refuses_a_target_removed_by_a_live_reload() {
         let run_path = temp_run("stale-target");
         let doc: Doc = serde_json::from_str(
-            r#"{"dagr":2,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"tasks":[]}"#,
+            r#"{"dagr":3,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"tasks":[]}"#,
         )
         .unwrap();
-        let error = prepare(&run_path, &doc, "gone", "continue", Authority::Decide)
+        let error = prepare(&run_path, &doc, "gone", "use-judgment", "continue", Authority::Decide)
             .err()
             .expect("stale target must be refused");
         assert!(error.contains("no longer in this run"));
+        assert!(!journal_path(&run_path).exists());
+        let _ = std::fs::remove_dir_all(run_path.parent().unwrap());
+    }
+
+    #[test]
+    fn prepare_refuses_a_target_duplicated_by_a_live_reload_before_journaling() {
+        let run_path = temp_run("duplicate-target");
+        let doc: Doc = serde_json::from_str(
+            r#"{"dagr":3,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"generated_at":"2026-08-20T01:02:03Z","tasks":[{"id":"A"},{"id":"A"}]}"#,
+        )
+        .unwrap();
+        let error = prepare(&run_path, &doc, "A", "use-judgment", "continue", Authority::Decide)
+            .err()
+            .expect("ambiguous target must be refused");
+        assert!(error.contains("one unique valid target"), "{error}");
         assert!(!journal_path(&run_path).exists());
         let _ = std::fs::remove_dir_all(run_path.parent().unwrap());
     }

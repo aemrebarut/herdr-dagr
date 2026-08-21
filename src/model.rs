@@ -80,7 +80,12 @@ pub(crate) fn needs_queued_stub(task: &Task) -> bool {
             .iter()
             .max_by_key(|a| a.n.unwrap_or(0))
             .and_then(|a| a.state.as_deref())
-            .is_some_and(|state| matches!(state, "failed" | "rejected"))
+            .is_some_and(|state| !matches!(state, "queued" | "working"))
+}
+
+pub(crate) fn needs_current_stub(task: &Task) -> bool {
+    (!task.attempts.is_empty() && task.state.as_deref() == Some("canceled"))
+        || needs_queued_stub(task)
 }
 
 impl Row {
@@ -265,37 +270,133 @@ struct Ix<'a> {
     task_by_id: std::collections::HashMap<&'a str, usize>,
     project_by_id: std::collections::HashMap<&'a str, usize>,
     attempt_by_id: std::collections::HashMap<&'a str, (usize, usize)>,
+    task_selectable: Vec<bool>,
+    project_selectable: Vec<bool>,
+    attempt_selectable: Vec<Vec<bool>>,
+    /// One cycle-safe, memoized visual home per task. Gate fan-in can share
+    /// large subgraphs, so resolving this on demand would repeat that work.
+    task_projects: Vec<Option<usize>>,
     /// attempt order per task, sorted by n
     order: Vec<Vec<usize>>,
+    #[cfg(test)]
+    scope_resolution_calls: usize,
+    #[cfg(test)]
+    scope_resolution_evaluations: usize,
 }
 
 impl<'a> Ix<'a> {
     fn new(doc: &'a Doc) -> Self {
         let tasks: &[Task] = doc.tasks.as_deref().unwrap_or(&[]);
         let projects = doc.projects.as_slice();
+        let mut node_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        let mut project_counts: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for task in tasks {
+            if let Some(id) = task.id.as_deref().filter(|id| crate::contract::valid_identity(id)) {
+                *node_counts.entry(id).or_default() += 1;
+            }
+            for attempt in &task.attempts {
+                if let Some(id) = attempt
+                    .id
+                    .as_deref()
+                    .filter(|id| crate::contract::valid_identity(id))
+                {
+                    *node_counts.entry(id).or_default() += 1;
+                }
+            }
+        }
+        for project in projects {
+            if let Some(id) = project
+                .id
+                .as_deref()
+                .filter(|id| crate::contract::valid_identity(id))
+            {
+                *project_counts.entry(id).or_default() += 1;
+            }
+        }
+        let project_row_keys: std::collections::HashSet<String> = project_counts
+            .keys()
+            .map(|id| format!("project:{id}"))
+            .collect();
         let mut task_by_id = std::collections::HashMap::new();
         let mut project_by_id = std::collections::HashMap::new();
         let mut attempt_by_id = std::collections::HashMap::new();
+        let mut task_selectable = Vec::with_capacity(tasks.len());
+        let mut attempt_selectable = Vec::with_capacity(tasks.len());
         let mut order = Vec::new();
         for (ti, t) in tasks.iter().enumerate() {
-            if let Some(id) = t.id.as_deref() {
-                task_by_id.entry(id).or_insert(ti);
+            let task_ok = t.id.as_deref().is_some_and(|id| {
+                crate::contract::valid_identity(id)
+                    && node_counts.get(id) == Some(&1)
+                    && !project_row_keys.contains(id)
+            });
+            task_selectable.push(task_ok);
+            if task_ok {
+                task_by_id.insert(t.id.as_deref().expect("validated task id"), ti);
             }
             let mut idx: Vec<usize> = (0..t.attempts.len()).collect();
             idx.sort_by_key(|&ai| t.attempts[ai].n.unwrap_or(0));
+            let mut selectable = vec![false; t.attempts.len()];
             for &ai in &idx {
-                if let Some(id) = t.attempts[ai].id.as_deref() {
-                    attempt_by_id.entry(id).or_insert((ti, ai));
+                let attempt_ok = task_ok
+                    && t.attempts[ai].id.as_deref().is_some_and(|id| {
+                        crate::contract::valid_identity(id) && node_counts.get(id) == Some(&1)
+                            && !project_row_keys.contains(id)
+                    });
+                selectable[ai] = attempt_ok;
+                if attempt_ok {
+                    attempt_by_id.insert(
+                        t.attempts[ai].id.as_deref().expect("validated attempt id"),
+                        (ti, ai),
+                    );
                 }
             }
+            attempt_selectable.push(selectable);
             order.push(idx);
         }
+        let mut project_selectable = Vec::with_capacity(projects.len());
         for (pi, p) in projects.iter().enumerate() {
-            if let Some(id) = p.id.as_deref() {
-                project_by_id.entry(id).or_insert(pi);
+            let project_ok = p.id.as_deref().is_some_and(|id| {
+                crate::contract::valid_identity(id)
+                    && project_counts.get(id) == Some(&1)
+                    && !node_counts.contains_key(format!("project:{id}").as_str())
+            });
+            project_selectable.push(project_ok);
+            if project_ok {
+                project_by_id.insert(p.id.as_deref().expect("validated project id"), pi);
             }
         }
-        Ix { tasks, projects, task_by_id, project_by_id, attempt_by_id, order }
+        let mut ix = Ix {
+            tasks,
+            projects,
+            task_by_id,
+            project_by_id,
+            attempt_by_id,
+            task_selectable,
+            project_selectable,
+            attempt_selectable,
+            task_projects: vec![None; tasks.len()],
+            order,
+            #[cfg(test)]
+            scope_resolution_calls: 0,
+            #[cfg(test)]
+            scope_resolution_evaluations: 0,
+        };
+        let mut states = vec![0u8; tasks.len()];
+        let mut memo = vec![None; tasks.len()];
+        let mut calls = 0usize;
+        let mut evaluations = 0usize;
+        for ti in 0..tasks.len() {
+            ix.resolve_task_project(ti, &mut states, &mut memo, &mut calls, &mut evaluations);
+        }
+        ix.task_projects = memo.into_iter().map(|scope| scope.unwrap_or(None)).collect();
+        #[cfg(test)]
+        {
+            ix.scope_resolution_calls = calls;
+            ix.scope_resolution_evaluations = evaluations;
+        }
+        ix
     }
 
     fn task_index(&self, n: NodeRef) -> usize {
@@ -336,40 +437,58 @@ impl<'a> Ix<'a> {
         None
     }
 
+    /// Resolve a task's visual home once. State 1 is the active DFS stack and
+    /// fails a malformed cycle closed to the run root; state 2 is memoized.
+    fn resolve_task_project(
+        &self,
+        ti: usize,
+        states: &mut [u8],
+        memo: &mut [Option<Option<usize>>],
+        calls: &mut usize,
+        evaluations: &mut usize,
+    ) -> Option<usize> {
+        *calls += 1;
+        match states.get(ti).copied() {
+            Some(2) => return memo[ti].unwrap_or(None),
+            Some(1) | None => return None,
+            Some(_) => {}
+        }
+        states[ti] = 1;
+        *evaluations += 1;
+        let task = &self.tasks[ti];
+        let explicit = task
+            .project
+            .as_deref()
+            .and_then(|id| self.project_by_id.get(id).copied());
+        let scope = if explicit.is_some() || task.kind.as_deref() != Some("gate") {
+            explicit
+        } else {
+            let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
+            let mut input_tasks =
+                inputs.iter().filter_map(|id| self.task_by_id.get(id.as_str()).copied());
+            if let Some(first) = input_tasks.next() {
+                let mut common =
+                    self.resolve_task_project(first, states, memo, calls, evaluations);
+                for input in input_tasks {
+                    let input_scope =
+                        self.resolve_task_project(input, states, memo, calls, evaluations);
+                    common = self.project_lca(common, input_scope);
+                }
+                common
+            } else {
+                None
+            }
+        };
+        states[ti] = 2;
+        memo[ti] = Some(scope);
+        scope
+    }
+
     /// A task has one visual home. A gate without an explicit home lives at
     /// the nearest project shared by every input (the run root if streams
     /// cross top-level projects).
     fn task_project(&self, ti: usize) -> Option<usize> {
-        self.task_project_guarded(ti, &mut std::collections::HashSet::new())
-    }
-
-    fn task_project_guarded(
-        &self,
-        ti: usize,
-        resolving: &mut std::collections::HashSet<usize>,
-    ) -> Option<usize> {
-        let task = self.tasks.get(ti)?;
-        if let Some(pi) = task
-            .project
-            .as_deref()
-            .and_then(|id| self.project_by_id.get(id).copied())
-        {
-            return Some(pi);
-        }
-        if task.kind.as_deref() != Some("gate") || !resolving.insert(ti) {
-            return None;
-        }
-        let inputs = task.inputs.as_ref().unwrap_or(&task.deps);
-        let mut scopes = inputs.iter().filter_map(|id| self.task_by_id.get(id.as_str()).copied());
-        let scope = scopes
-            .next()
-            .and_then(|first| {
-                scopes.fold(self.task_project_guarded(first, resolving), |common, input| {
-                    self.project_lca(common, self.task_project_guarded(input, resolving))
-                })
-            });
-        resolving.remove(&ti);
-        scope
+        self.task_projects.get(ti).copied().flatten()
     }
 
     fn same_project(&self, a: usize, b: usize) -> bool {
@@ -409,7 +528,7 @@ impl<'a> Ix<'a> {
     }
 
     fn current_node(&self, ti: usize) -> NodeRef {
-        if needs_queued_stub(&self.tasks[ti]) {
+        if needs_current_stub(&self.tasks[ti]) {
             NodeRef::T(ti)
         } else {
             self.latest_attempt(ti).unwrap_or(NodeRef::T(ti))
@@ -450,11 +569,34 @@ impl<'a> Ix<'a> {
 
     fn key_of(&self, n: NodeRef) -> String {
         match n {
-            NodeRef::A(ti, ai) => self.tasks[ti].attempts[ai]
+            NodeRef::A(ti, ai) if self.attempt_selectable[ti][ai] => self.tasks[ti].attempts[ai]
                 .id
                 .clone()
-                .unwrap_or_else(|| format!("?a{ti}.{ai}")),
-            NodeRef::T(ti) => self.tasks[ti].id.clone().unwrap_or_else(|| format!("?t{ti}")),
+                .expect("selectable attempt has id"),
+            NodeRef::A(ti, ai) => format!("\u{1f}invalid:attempt:{ti}:{ai}"),
+            NodeRef::T(ti) if self.task_selectable[ti] => self.tasks[ti]
+                .id
+                .clone()
+                .expect("selectable task has id"),
+            NodeRef::T(ti) => format!("\u{1f}invalid:task:{ti}"),
+        }
+    }
+
+    fn node_selectable(&self, n: NodeRef) -> bool {
+        match n {
+            NodeRef::A(ti, ai) => self.attempt_selectable[ti][ai],
+            NodeRef::T(ti) => self.task_selectable[ti],
+        }
+    }
+
+    fn project_key(&self, pi: usize) -> String {
+        if self.project_selectable[pi] {
+            format!(
+                "project:{}",
+                self.projects[pi].id.as_deref().expect("selectable project has id")
+            )
+        } else {
+            format!("\u{1f}invalid:project:{pi}")
         }
     }
 
@@ -471,6 +613,93 @@ impl<'a> Ix<'a> {
                 }
             }
             NodeRef::T(ti) => self.tasks[ti].id.clone().unwrap_or_default(),
+        }
+    }
+
+    fn first_unmet(&self, task: &Task) -> Option<(String, u8)> {
+        let deps = if task.kind.as_deref() == Some("gate") {
+            task.inputs.as_deref().unwrap_or(&task.deps)
+        } else {
+            &task.deps
+        };
+        deps.iter().find_map(|dep| {
+            let state = self
+                .task_by_id
+                .get(dep.as_str())
+                .and_then(|&ti| self.tasks[ti].state.as_deref())
+                .unwrap_or("queued");
+            (state != "done").then(|| (dep.clone(), style::state_color(state)))
+        })
+    }
+
+    /// One queued projection shared by rows, projects, folds, focus and the
+    /// attention queue. Assignment may come from the task or its current
+    /// queued attempt, but never from a settled historical attempt.
+    fn queued_signal(&self, ti: usize) -> &'static str {
+        let task = &self.tasks[ti];
+        if self.first_unmet(task).is_some() {
+            return "waiting";
+        }
+        if task.kind.as_deref() == Some("question") {
+            return "needs_answer";
+        }
+        let assigned = task.owner.as_deref().is_some_and(|owner| !owner.is_empty())
+            || self
+                .attempt(self.current_node(ti))
+                .and_then(|attempt| attempt.actor.as_deref())
+                .is_some_and(|actor| !actor.is_empty());
+        if assigned { "ready" } else { "unassigned" }
+    }
+
+    /// One task-level projection shared by rows, projects, folds, focus and
+    /// the attention queue. Readiness remains derived from declared facts.
+    fn task_signal(&self, ti: usize) -> &'static str {
+        let task = &self.tasks[ti];
+        let raw = task.state.as_deref().unwrap_or("");
+        if raw == "canceled" {
+            if task.attempts.iter().any(|a| a.state.as_deref() == Some("lost")) {
+                return "lost";
+            }
+            if task
+                .attempts
+                .iter()
+                .any(|a| a.state.as_deref() == Some("working"))
+            {
+                return "working";
+            }
+            return "canceled";
+        }
+        if matches!(raw, "blocked" | "review") {
+            return if raw == "blocked" { "blocked" } else { "review" };
+        }
+        if let Some(state) = self
+            .latest_attempt(ti)
+            .and_then(|n| self.attempt(n))
+            .and_then(|a| a.state.as_deref())
+        {
+            match state {
+                "lost" => return "lost",
+                "settled_unverified" => return "settled_unverified",
+                _ => {}
+            }
+        }
+        if raw == "working"
+            || self
+                .latest_attempt(ti)
+                .and_then(|n| self.attempt(n))
+                .and_then(|a| a.state.as_deref())
+                == Some("working")
+        {
+            return "working";
+        }
+        if raw == "queued" {
+            return self.queued_signal(ti);
+        }
+        match raw {
+            "done" => "done",
+            "failed" | "rejected" => "failed",
+            "settled_unverified" => "settled_unverified",
+            _ => "invalid",
         }
     }
 
@@ -571,7 +800,7 @@ fn forest(ix: &Ix) -> Forest {
             for &ai in &ix.order[ti] {
                 all.push(NodeRef::A(ti, ai));
             }
-            if needs_queued_stub(t) {
+            if needs_current_stub(t) {
                 all.push(NodeRef::T(ti));
             }
         }
@@ -606,91 +835,99 @@ fn forest(ix: &Ix) -> Forest {
 fn effective_state(ix: &Ix, n: NodeRef) -> String {
     let ti = ix.task_index(n);
     let task = ix.task_of(n);
-    // Cancellation is a task-level planning fact, not a fabricated outcome
-    // for an earlier attempt. It replaces only the task's current/latest row;
-    // older attempt rows keep their historical states.
-    if task.state.as_deref() == Some("canceled")
-        && ix.latest_attempt(ti).is_none_or(|latest| latest == n)
-    {
-        return "canceled".to_string();
-    }
     match ix.attempt(n) {
         Some(a) => {
             let st = a.state.as_deref().unwrap_or("queued");
-            if matches!(st, "working" | "queued") {
+            if ix.current_node(ti) == n && matches!(st, "working" | "queued") {
                 if let Some(ts @ ("blocked" | "review")) = ix.task_of(n).state.as_deref() {
                     return ts.to_string();
+                }
+                if st == "queued" && ix.task_of(n).state.as_deref() == Some("queued") {
+                    return ix.queued_signal(ti).to_string();
                 }
             }
             st.to_string()
         }
-        None => ix.task_of(n).state.as_deref().unwrap_or("queued").to_string(),
+        None if task.state.as_deref() == Some("canceled") => "canceled".to_string(),
+        None => ix.task_signal(ti).to_string(),
     }
 }
 
 /// First declared prerequisite that has not completed successfully. A
 /// terminal failure or cancellation remains unmet: downstream work does not
 /// become ready merely because its blocker stopped.
-fn first_unmet(ix: &Ix, deps: &[String]) -> Option<(String, u8)> {
-    deps.iter().find_map(|dep| {
-        let state = ix
-            .task_by_id
-            .get(dep.as_str())
-            .and_then(|&ti| ix.tasks[ti].state.as_deref())
-            .unwrap_or("queued");
-        (state != "done").then(|| (dep.clone(), style::state_color(state)))
-    })
-}
-
 /// A queued row's operator-facing signal. This is derived entirely from
 /// existing task fields, so producers declare no second readiness state.
-fn queued_status(ix: &Ix, task: &Task, assigned: bool) -> Vec<Seg> {
-    let deps = if task.kind.as_deref() == Some("gate") {
-        task.inputs.as_deref().unwrap_or(&task.deps)
-    } else {
-        &task.deps
-    };
-    if let Some((id, col)) = first_unmet(ix, deps) {
-        return vec![
-            Seg("waits ".into(), Style::dim(style::QUEUED)),
-            Seg(id, Style::bold(col)),
-        ];
-    }
-    if task.kind.as_deref() == Some("question") {
-        return vec![Seg("needs answer".into(), Style::bold(style::REVIEW))];
-    }
-    if assigned {
-        vec![Seg("ready".into(), Style::bold(style::DONE))]
-    } else {
-        vec![Seg("unassigned".into(), Style::bold(style::QUEUED))]
+fn queued_status(ix: &Ix, ti: usize) -> Vec<Seg> {
+    match ix.queued_signal(ti) {
+        "waiting" => {
+            let (id, col) = ix.first_unmet(&ix.tasks[ti]).expect("waiting has an unmet input");
+            vec![
+                Seg("waits ".into(), Style::dim(style::QUEUED)),
+                Seg(id, Style::bold(col)),
+            ]
+        }
+        "needs_answer" => vec![Seg("needs answer".into(), Style::bold(style::REVIEW))],
+        "ready" => vec![Seg("ready".into(), Style::bold(style::DONE))],
+        _ => vec![Seg("unassigned".into(), Style::bold(style::QUEUED))],
     }
 }
 
-/// states: [blocked, lost, review, settled_unverified, working, queued,
-/// failed/rejected, canceled, done]. The aggregate row names the total;
+const SIGNAL_KINDS: usize = 12;
+
+fn tally_signal(state: &str, states: &mut [usize; SIGNAL_KINDS]) {
+    let index = match state {
+        "blocked" => 0,
+        "lost" => 1,
+        "review" => 2,
+        "needs_answer" => 3,
+        "settled_unverified" => 4,
+        "working" => 5,
+        "waiting" => 6,
+        "ready" => 7,
+        "unassigned" => 8,
+        "failed" | "rejected" => 9,
+        "canceled" => 10,
+        _ => 11,
+    };
+    states[index] += 1;
+}
+
+/// states: blocked, lost, review, needs-answer, unverified, working,
+/// waiting, ready, unassigned, failed/rejected, canceled, done. The row
 /// these are the composition, not a second rendering of the folded root task.
-fn fold_chip(states: &[usize; 9]) -> FoldChip {
+fn fold_chip(states: &[usize; SIGNAL_KINDS]) -> FoldChip {
     let mut segs = Vec::new();
     let mut hot = None;
     let cats = [
         ("blocked", states[0]),
         ("lost", states[1]),
         ("review", states[2]),
-        ("settled_unverified", states[3]),
-        ("working", states[4]),
-        ("queued", states[5]),
-        ("failed", states[6]),
-        ("canceled", states[7]),
-        ("done", states[8]),
+        ("needs_answer", states[3]),
+        ("settled_unverified", states[4]),
+        ("working", states[5]),
+        ("waiting", states[6]),
+        ("ready", states[7]),
+        ("unassigned", states[8]),
+        ("failed", states[9]),
+        ("canceled", states[10]),
+        ("done", states[11]),
     ];
     for (state, count) in cats {
         if count == 0 {
             continue;
         }
         let col = style::state_color(state);
-        let label = if state == "settled_unverified" { "unverified" } else { state };
+        let label = match state {
+            "settled_unverified" => "unverified",
+            "needs_answer" => "needs answer",
+            other => other,
+        };
         // activity/settled categories show but do not make the fold an alarm
-        let live = matches!(state, "blocked" | "lost" | "review" | "settled_unverified" | "failed");
+        let live = matches!(
+            state,
+            "blocked" | "lost" | "review" | "needs_answer" | "settled_unverified" | "failed"
+        );
         if live && hot.is_none() {
             hot = Some(col);
         }
@@ -738,6 +975,9 @@ pub fn settled_roots(doc: &Doc) -> Vec<String> {
 /// open for the row to be visible. Cycle-guarded against malformed docs.
 pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
     let ix = Ix::new(doc);
+    let mut project_cur = key
+        .strip_prefix("project:")
+        .and_then(|id| ix.project_by_id.get(id).copied());
     let mut cur = ix
         .attempt_by_id
         .get(key)
@@ -747,6 +987,7 @@ pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
                 .get(key)
                 .map(|&ti| ix.current_node(ti))
         });
+    let task_project = cur.and_then(|n| ix.task_project(ix.task_index(n)));
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     while let Some(n) = cur {
@@ -758,8 +999,21 @@ pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
                 out.push(ix.key_of(p));
                 cur = Some(p);
             }
-            _ => break,
+            _ => {
+                project_cur = task_project;
+                break;
+            }
         }
+    }
+    let mut seen_projects = std::collections::HashSet::new();
+    while let Some(pi) = project_cur {
+        if !seen_projects.insert(pi) {
+            break;
+        }
+        if key != ix.project_key(pi) {
+            out.push(ix.project_key(pi));
+        }
+        project_cur = ix.project_parent(pi);
     }
     out
 }
@@ -768,7 +1022,26 @@ pub fn ancestors(doc: &Doc, key: &str) -> Vec<String> {
 /// Zoom stacks and fold sets are pruned with this across reloads.
 pub fn key_exists(doc: &Doc, key: &str) -> bool {
     let ix = Ix::new(doc);
-    ix.attempt_by_id.contains_key(key) || ix.task_by_id.contains_key(key)
+    ix.attempt_by_id.contains_key(key)
+        || ix.task_by_id.contains_key(key)
+        || key
+            .strip_prefix("project:")
+            .is_some_and(|id| ix.project_by_id.contains_key(id))
+}
+
+/// Effective state for one unambiguous interactive identity. Focus cards use
+/// this rather than re-deriving lifecycle semantics independently.
+pub fn selection_state(doc: &Doc, key: &str) -> Option<String> {
+    let ix = Ix::new(doc);
+    if let Some(&(ti, ai)) = ix.attempt_by_id.get(key) {
+        return Some(effective_state(&ix, NodeRef::A(ti, ai)));
+    }
+    if let Some(&ti) = ix.task_by_id.get(key) {
+        return Some(effective_state(&ix, ix.current_node(ti)));
+    }
+    key.strip_prefix("project:")
+        .and_then(|id| ix.project_by_id.get(id).copied())
+        .map(|pi| project_row(&ix, pi, 0).state)
 }
 
 /// Does a row answer this search? Matched fields: row key, display name,
@@ -783,8 +1056,9 @@ pub fn row_matches(r: &Row, q: &str) -> bool {
 fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
     let project = &ix.projects[pi];
     let id = project.id.as_deref().unwrap_or("?");
-    let mut row = Row::blank(&format!("project:{id}"), "", "queued");
+    let mut row = Row::blank(&ix.project_key(pi), "", "queued");
     row.project = true;
+    row.selectable = ix.project_selectable[pi];
     row.rail = "  ".repeat(depth);
     row.glyph = '▾';
     row.name = id.to_string();
@@ -800,34 +1074,26 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
     // collapsed organizational scope reports its health, so it must not
     // turn failures, lost attempts, or unverified settlements into the
     // reassuring word "settled".
-    let mut counts = [0usize; 9]; // blocked, lost, review, unverified, working, queued, failed, canceled, done
+    let mut counts = [0usize; SIGNAL_KINDS];
     for ti in 0..ix.tasks.len() {
         if !ix.project_is_within(ix.task_project(ti), pi) {
             continue;
         }
-        let node = ix.current_node(ti);
-        match effective_state(ix, node).as_str() {
-            "blocked" => counts[0] += 1,
-            "lost" => counts[1] += 1,
-            "review" => counts[2] += 1,
-            "settled_unverified" => counts[3] += 1,
-            "working" => counts[4] += 1,
-            "queued" => counts[5] += 1,
-            "failed" | "rejected" => counts[6] += 1,
-            "canceled" => counts[7] += 1,
-            _ => counts[8] += 1,
-        }
+        tally_signal(ix.task_signal(ti), &mut counts);
     }
     let specs = [
         (0, "blocked", style::BLOCKED),
         (1, "lost", style::BLOCKED),
         (2, "review", style::REVIEW),
-        (3, "unverified", style::EV_HEURISTIC),
-        (4, "working", style::WORKING),
-        (5, "queued", style::QUEUED),
-        (6, "failed", style::FAILED),
-        (7, "canceled", style::MUTED),
-        (8, "done", style::DONE),
+        (3, "needs answer", style::REVIEW),
+        (4, "unverified", style::EV_HEURISTIC),
+        (5, "working", style::WORKING),
+        (6, "waiting", style::QUEUED),
+        (7, "ready", style::DONE),
+        (8, "unassigned", style::QUEUED),
+        (9, "failed", style::FAILED),
+        (10, "canceled", style::MUTED),
+        (11, "done", style::DONE),
     ];
     for (idx, label, color) in specs {
         if counts[idx] > 0 {
@@ -836,7 +1102,7 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
             }
             row.status.push(Seg(
                 format!("{} {label}", counts[idx]),
-                if matches!(idx, 0 | 1 | 2 | 3 | 6) {
+                if matches!(idx, 0 | 1 | 2 | 3 | 4 | 9) {
                     Style::bold(color)
                 } else {
                     Style::dim(color)
@@ -851,21 +1117,30 @@ fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
     } else if counts[2] > 0 {
         "review"
     } else if counts[3] > 0 {
-        "settled_unverified"
-    } else if counts[6] > 0 {
-        "failed"
+        "needs_answer"
     } else if counts[4] > 0 {
-        "working"
+        "settled_unverified"
+    } else if counts[9] > 0 {
+        "failed"
     } else if counts[5] > 0 {
-        "queued"
+        "working"
+    } else if counts[6] > 0 {
+        "waiting"
     } else if counts[7] > 0 {
+        "ready"
+    } else if counts[8] > 0 {
+        "unassigned"
+    } else if counts[10] > 0 {
         "canceled"
     } else {
         "done"
     };
     row.state = strongest.into();
     row.glyph_color = style::state_color(strongest);
-    row.hot = matches!(strongest, "blocked" | "lost" | "review" | "settled_unverified" | "failed");
+    row.hot = matches!(
+        strongest,
+        "blocked" | "lost" | "review" | "needs_answer" | "settled_unverified" | "failed"
+    );
     row
 }
 
@@ -936,7 +1211,15 @@ pub fn build(
     let Forest { all, children, index, roots } = forest(&ix);
 
     // zoom: re-root the walk at one row; an unknown key draws the full run
-    let zoom_node = opts.zoom.and_then(|z| all.iter().copied().find(|&n| ix.key_of(n) == z));
+    let zoom_project = opts
+        .zoom
+        .and_then(|z| z.strip_prefix("project:"))
+        .and_then(|id| ix.project_by_id.get(id).copied());
+    let zoom_node = if zoom_project.is_some() {
+        None
+    } else {
+        opts.zoom.and_then(|z| all.iter().copied().find(|&n| ix.key_of(n) == z))
+    };
     let walk_roots: Vec<NodeRef> = match zoom_node {
         Some(n) => vec![n],
         None => roots.clone(),
@@ -948,11 +1231,12 @@ pub fn build(
     // inside a fold. This is also the cycle guard for malformed graphs,
     // and keeps the unreachable-node fallback below from resurrecting
     // folded work as flat rows.
-    let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut covered: std::collections::HashSet<NodeRef> = std::collections::HashSet::new();
 
     let mut rows: Vec<Row> = Vec::new();
     struct Walker<'a, 'b> {
         ix: &'b Ix<'a>,
+        all: &'b [NodeRef],
         children: &'b [Vec<NodeRef>],
         index: &'b std::collections::HashMap<NodeRef, usize>,
         rows: &'b mut Vec<Row>,
@@ -960,7 +1244,7 @@ pub fn build(
         now_min: Option<i64>,
         hints: Option<&'b Hints>,
         folded: &'b std::collections::HashSet<String>,
-        covered: &'b mut std::collections::HashSet<String>,
+        covered: &'b mut std::collections::HashSet<NodeRef>,
     }
     impl<'a, 'b> Walker<'a, 'b> {
         fn pos(&self, n: NodeRef) -> usize {
@@ -968,32 +1252,31 @@ pub fn build(
         }
         /// Mark a folded-away subtree as covered while tallying what the
         /// fold hides — count and attention states, for the ▸ chip.
-        fn tally(state: &str, states: &mut [usize; 9]) {
-            match state {
-                "blocked" => states[0] += 1,
-                "lost" => states[1] += 1,
-                "review" => states[2] += 1,
-                "settled_unverified" => states[3] += 1,
-                "working" => states[4] += 1,
-                "queued" => states[5] += 1,
-                "failed" | "rejected" => states[6] += 1,
-                "canceled" => states[7] += 1,
-                _ => states[8] += 1,
-            }
+        fn tally(state: &str, states: &mut [usize; SIGNAL_KINDS]) {
+            tally_signal(state, states);
         }
-        fn consume(&mut self, n: NodeRef, hidden: &mut usize, states: &mut [usize; 9]) {
+        fn consume(
+            &mut self,
+            n: NodeRef,
+            hidden: &mut usize,
+            states: &mut [usize; SIGNAL_KINDS],
+            seen_tasks: &mut std::collections::HashSet<usize>,
+        ) {
             for k in self.children[self.pos(n)].clone() {
-                if !self.covered.insert(self.ix.key_of(k)) {
+                if !self.covered.insert(k) {
                     continue;
                 }
                 *hidden += 1;
-                Self::tally(&effective_state(self.ix, k), states);
-                self.consume(k, hidden, states);
+                let ti = self.ix.task_index(k);
+                if seen_tasks.insert(ti) {
+                    Self::tally(self.ix.task_signal(ti), states);
+                }
+                self.consume(k, hidden, states, seen_tasks);
             }
         }
         fn walk(&mut self, n: NodeRef, prefix: &str, is_root: bool, is_last: bool, parent: Option<&str>) {
             let key = self.ix.key_of(n);
-            if !self.covered.insert(key.clone()) {
+            if !self.covered.insert(n) {
                 return;
             }
             let rail = if is_root {
@@ -1034,17 +1317,18 @@ pub fn build(
             // alarm visible — a fold must never hide a blocked row silently
             if !kids.is_empty() && self.folded.contains(&key) {
                 let mut hidden = 0usize;
-                let mut states = [0usize; 9];
-                Self::tally(&effective_state(self.ix, n), &mut states);
-                self.consume(n, &mut hidden, &mut states);
+                let mut states = [0usize; SIGNAL_KINDS];
+                let mut seen_tasks = std::collections::HashSet::new();
+                let ti = self.ix.task_index(n);
+                seen_tasks.insert(ti);
+                Self::tally(self.ix.task_signal(ti), &mut states);
+                self.consume(n, &mut hidden, &mut states, &mut seen_tasks);
                 let row = self.rows.last_mut().expect("row just pushed");
-                let origin = row.name.clone();
                 let chip = fold_chip(&states);
                 row.glyph = '▸';
                 row.glyph_color = chip.hot.unwrap_or(style::ACCENT);
                 row.hot = chip.hot.is_some();
-                row.name = format!("{} items", hidden + 1);
-                row.title = format!("folded branch · from {origin}");
+                row.title = format!("folded branch · {} items", hidden + 1);
                 row.title_dim = false;
                 row.join = None;
                 row.chips.clear();
@@ -1091,30 +1375,104 @@ pub fn build(
         w: &mut Walker<'a, 'b>,
         pi: usize,
         depth: usize,
+        parent: Option<&str>,
         scoped: &std::collections::HashMap<Option<usize>, Vec<NodeRef>>,
         project_children: &[Vec<usize>],
+        project_seen: &mut std::collections::HashSet<usize>,
     ) {
-        w.rows.push(project_row(w.ix, pi, depth));
+        if !project_seen.insert(pi) {
+            return;
+        }
         let roots = scoped.get(&Some(pi)).cloned().unwrap_or_default();
         let (mut ordinary, mut gates): (Vec<_>, Vec<_>) = roots
             .into_iter()
             .partition(|&n| w.ix.task_of(n).kind.as_deref() != Some("gate"));
+        let children = project_children.get(pi).map(Vec::as_slice).unwrap_or(&[]);
+        let key = w.ix.project_key(pi);
+        let mut row = project_row(w.ix, pi, depth);
+        row.parent = parent.map(str::to_string);
+        row.has_kids = !ordinary.is_empty() || !gates.is_empty() || !children.is_empty();
+        w.rows.push(row);
+
+        if w.rows.last().is_some_and(|row| row.has_kids) && w.folded.contains(&key) {
+            let mut states = [0usize; SIGNAL_KINDS];
+            let mut hidden = 0usize;
+            for ti in 0..w.ix.tasks.len() {
+                if w.ix.project_is_within(w.ix.task_project(ti), pi) {
+                    tally_signal(w.ix.task_signal(ti), &mut states);
+                }
+            }
+            for &n in w.all {
+                if w
+                    .ix
+                    .project_is_within(w.ix.task_project(w.ix.task_index(n)), pi)
+                    && w.covered.insert(n)
+                {
+                    hidden += 1;
+                }
+            }
+            let mut stack = children.to_vec();
+            while let Some(child) = stack.pop() {
+                if project_seen.insert(child) {
+                    hidden += 1;
+                    stack.extend(
+                        project_children
+                            .get(child)
+                            .map(Vec::as_slice)
+                            .unwrap_or(&[]),
+                    );
+                }
+            }
+            let row = w.rows.last_mut().expect("project row just pushed");
+            let chip = fold_chip(&states);
+            row.glyph = '▸';
+            row.glyph_color = chip.hot.unwrap_or(style::ACCENT);
+            row.hot = chip.hot.is_some();
+            row.title = format!("folded project · {} hidden", hidden);
+            row.fold = Some(chip);
+            return;
+        }
+
         let prefix = format!("{}  ", "  ".repeat(depth));
         let ordinary_n = ordinary.len();
         for (i, n) in ordinary.drain(..).enumerate() {
-            w.walk(n, &prefix, false, i + 1 == ordinary_n, None);
+            w.walk(n, &prefix, false, i + 1 == ordinary_n, Some(&key));
         }
-        for &child in project_children.get(pi).map(Vec::as_slice).unwrap_or(&[]) {
-            walk_project(w, child, depth + 1, scoped, project_children);
+        for &child in children {
+            walk_project(
+                w,
+                child,
+                depth + 1,
+                Some(&key),
+                scoped,
+                project_children,
+                project_seen,
+            );
         }
         let gates_n = gates.len();
         for (i, n) in gates.drain(..).enumerate() {
-            w.walk(n, &prefix, false, i + 1 == gates_n, None);
+            w.walk(n, &prefix, false, i + 1 == gates_n, Some(&key));
         }
     }
+
+    let mut scoped: std::collections::HashMap<Option<usize>, Vec<NodeRef>> =
+        std::collections::HashMap::new();
+    for &root in &roots {
+        scoped.entry(ix.task_project(ix.task_index(root))).or_default().push(root);
+    }
+    let mut project_children = vec![Vec::new(); ix.projects.len()];
+    let mut top_projects = Vec::new();
+    for pi in 0..ix.projects.len() {
+        match ix.project_parent(pi) {
+            Some(parent) if parent < project_children.len() => project_children[parent].push(pi),
+            _ => top_projects.push(pi),
+        }
+    }
+    let mut project_seen = std::collections::HashSet::new();
     {
         let mut w = Walker {
             ix: &ix,
+            all: &all,
             children: &children,
             index: &index,
             rows: &mut rows,
@@ -1128,6 +1486,17 @@ pub fn build(
             for (i, &r) in walk_roots.iter().enumerate() {
                 w.walk(r, " ", true, i == walk_roots.len() - 1, None);
             }
+        } else if let Some(pi) = zoom_project {
+            let parent = ix.project_parent(pi).map(|parent| ix.project_key(parent));
+            walk_project(
+                &mut w,
+                pi,
+                0,
+                parent.as_deref(),
+                &scoped,
+                &project_children,
+                &mut project_seen,
+            );
         } else if ix.projects.is_empty() {
             let (ordinary, gates): (Vec<_>, Vec<_>) = walk_roots
                 .iter()
@@ -1140,21 +1509,6 @@ pub fn build(
                 w.walk(r, " ", true, i + 1 == gates.len(), None);
             }
         } else {
-            let mut scoped: std::collections::HashMap<Option<usize>, Vec<NodeRef>> =
-                std::collections::HashMap::new();
-            for &r in &roots {
-                scoped.entry(ix.task_project(ix.task_index(r))).or_default().push(r);
-            }
-            let mut project_children = vec![Vec::new(); ix.projects.len()];
-            let mut top_projects = Vec::new();
-            for pi in 0..ix.projects.len() {
-                match ix.project_parent(pi) {
-                    Some(parent) if parent < project_children.len() => {
-                        project_children[parent].push(pi)
-                    }
-                    _ => top_projects.push(pi),
-                }
-            }
             let root_nodes = scoped.get(&None).cloned().unwrap_or_default();
             let (ordinary, gates): (Vec<_>, Vec<_>) = root_nodes
                 .into_iter()
@@ -1163,7 +1517,30 @@ pub fn build(
                 w.walk(r, " ", true, i + 1 == ordinary.len(), None);
             }
             for pi in top_projects {
-                walk_project(&mut w, pi, 0, &scoped, &project_children);
+                walk_project(
+                    &mut w,
+                    pi,
+                    0,
+                    None,
+                    &scoped,
+                    &project_children,
+                    &mut project_seen,
+                );
+            }
+            // A malformed project cycle has no top-level member. Keep every
+            // project visible exactly once while the validator names the cycle.
+            for pi in 0..ix.projects.len() {
+                if !project_seen.contains(&pi) {
+                    walk_project(
+                        &mut w,
+                        pi,
+                        0,
+                        None,
+                        &scoped,
+                        &project_children,
+                        &mut project_seen,
+                    );
+                }
             }
             for (i, &r) in gates.iter().enumerate() {
                 w.walk(r, " ", true, i + 1 == gates.len(), None);
@@ -1174,9 +1551,9 @@ pub fn build(
     // root. They still exist: emit them flat so the contract-error banner
     // has visible rows to explain, instead of silently dropping work.
     // (Skipped under zoom: out-of-subtree nodes are excluded on purpose.)
-    if zoom_node.is_none() {
+    if zoom_node.is_none() && zoom_project.is_none() {
         for &n in &all {
-            if !covered.contains(&ix.key_of(n)) {
+            if !covered.contains(&n) {
                 rows.push(node_row(&ix, n, " ", false, now_min, hints));
             }
         }
@@ -1237,26 +1614,13 @@ pub fn build(
     };
     let mut queue: Vec<QueueItem> = tasks
         .iter()
-        .filter_map(|t| {
-            let last = ix
-                .task_by_id
-                .get(t.id.as_deref().unwrap_or(""))
-                .and_then(|&ti| ix.order[ti].last().map(|&ai| &t.attempts[ai]));
-            // attention state: `lost` and `settled_unverified` are attempt
-            // facts — project the latest attempt's alarm over the task state
-            let mut state = match t.state.as_deref() {
-                Some("canceled") => "canceled".to_string(),
-                _ => match last.and_then(|a| a.state.as_deref()) {
-                    Some(s @ ("lost" | "settled_unverified")) => s.to_string(),
-                    _ => t.state.as_deref().unwrap_or("").to_string(),
-                },
-            };
-            if state == "queued"
-                && t.kind.as_deref() == Some("question")
-                && first_unmet(&ix, &t.deps).is_none()
-            {
-                state = "needs_answer".to_string();
+        .enumerate()
+        .filter_map(|(ti, t)| {
+            if !ix.task_selectable[ti] {
+                return None;
             }
+            let last = ix.order[ti].last().map(|&ai| &t.attempts[ai]);
+            let state = ix.task_signal(ti).to_string();
             if rank(&state) >= 9 {
                 return None;
             }
@@ -1315,6 +1679,31 @@ pub fn build(
             .count();
         queue.retain(|q| keep.contains(&q.task_id));
         ZoomNote { root: ix.key_of(zn), outside }
+    }).or_else(|| {
+        zoom_project.map(|pi| {
+            let keep: std::collections::HashSet<String> = tasks
+                .iter()
+                .enumerate()
+                .filter(|(ti, _)| ix.project_is_within(ix.task_project(*ti), pi))
+                .filter_map(|(_, task)| task.id.clone())
+                .collect();
+            let outside = queue
+                .iter()
+                .filter(|item| !keep.contains(&item.task_id))
+                .filter(|item| {
+                    matches!(
+                        item.state.as_str(),
+                        "blocked"
+                            | "lost"
+                            | "review"
+                            | "needs_answer"
+                            | "settled_unverified"
+                    )
+                })
+                .count();
+            queue.retain(|item| keep.contains(&item.task_id));
+            ZoomNote { root: ix.project_key(pi), outside }
+        })
     });
 
     Scene { rows, queue, run_title, run_meta, selected_task, zoom }
@@ -1341,7 +1730,7 @@ fn node_row(
     let mut row = Row::blank(&ix.key_of(n), tid, "");
     row.rail = rail.to_string();
     row.reentry = reentry;
-    row.selectable = true;
+    row.selectable = ix.node_selectable(n);
     row.name = ix.display_name(n);
     row.title = task.title.clone().unwrap_or_default();
     row.milestone = kind == "gate";
@@ -1399,9 +1788,7 @@ fn node_row(
                 row.status = vec![Seg("unverified".into(), Style::fg(style::EV_HEURISTIC))];
             }
             "queued" => {
-                let assigned = a.actor.as_deref().is_some_and(|actor| !actor.is_empty())
-                    || task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
-                row.status = queued_status(ix, task, assigned);
+                row.status = queued_status(ix, ix.task_index(n));
             }
             _ => {
                 row.status = vec![Seg("queued".into(), Style::dim(style::QUEUED))];
@@ -1451,19 +1838,26 @@ fn node_row(
                 }
             }
         }
-        if task.state.as_deref() == Some("canceled")
-            && ix.latest_attempt(ix.task_index(n)) == Some(n)
-        {
-            row.state = "canceled".into();
-            row.glyph = style::state_glyph("canceled");
-            row.glyph_color = style::state_color("canceled");
-            row.hot = false;
-            row.title_dim = true;
-            row.status = vec![Seg("canceled".into(), Style::dim(style::MUTED))];
+        let projected = effective_state(ix, n);
+        if matches!(st, "queued" | "working") && projected != st {
+            row.state = projected.clone();
+            row.glyph = style::state_glyph(&projected);
+            row.glyph_color = style::state_color(&projected);
+            row.hot = matches!(projected.as_str(), "blocked" | "review" | "needs_answer");
+            if matches!(
+                projected.as_str(),
+                "waiting" | "ready" | "unassigned" | "needs_answer"
+            ) {
+                row.status = queued_status(ix, ix.task_index(n));
+            }
         }
     } else {
         // task stub (no attempts yet)
-        let st = task.state.as_deref().unwrap_or("queued");
+        let st = if task.state.as_deref() == Some("canceled") {
+            "canceled"
+        } else {
+            ix.task_signal(ix.task_index(n))
+        };
         row.state = st.to_string();
         row.glyph = style::state_glyph(st);
         row.glyph_color = style::state_color(st);
@@ -1492,9 +1886,8 @@ fn node_row(
             "canceled" => {
                 row.status = vec![Seg("canceled".into(), Style::dim(style::MUTED))];
             }
-            "queued" => {
-                let assigned = task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
-                row.status = queued_status(ix, task, assigned);
+            "queued" | "waiting" | "ready" | "unassigned" | "needs_answer" => {
+                row.status = queued_status(ix, ix.task_index(n));
             }
             _ => {
                 row.status = vec![Seg("queued".into(), Style::dim(style::QUEUED))];
@@ -1513,15 +1906,14 @@ fn node_row(
                 let ist = ix
                     .task_by_id
                     .get(input.as_str())
-                    .and_then(|&ti| ix.tasks[ti].state.as_deref())
-                    .unwrap_or("queued");
+                    .map(|&ti| ix.task_signal(ti))
+                    .unwrap_or("invalid");
                 states.push(ist.to_string());
             }
             row.join = Some(GateJoin { states });
-            row.glyph = '⋈';
+            row.glyph = style::state_glyph("working");
             if ix.attempt(n).is_none() && row.state == "queued" {
-                let assigned = task.owner.as_deref().is_some_and(|owner| !owner.is_empty());
-                row.status = queued_status(ix, task, assigned);
+                row.status = queued_status(ix, ix.task_index(n));
             }
         }
     }
@@ -1801,7 +2193,8 @@ mod tests {
             &ViewOpts { zoom: Some("A"), folded: Some(&fold_set) },
         );
         assert_eq!(keys(&folded_scene), ["A"]);
-        assert_eq!(folded_scene.rows[0].name, "3 items");
+        assert_eq!(folded_scene.rows[0].name, "A");
+        assert!(folded_scene.rows[0].title.contains("3 items"));
     }
 
     #[test]
@@ -1839,7 +2232,7 @@ mod tests {
         assert!(gate.milestone);
         assert_eq!(
             gate.join.as_ref().map(|j| j.states.as_slice()),
-            Some(["queued".to_string(), "queued".to_string()].as_slice())
+            Some(["waiting".to_string(), "waiting".to_string()].as_slice())
         );
         assert_eq!(
             scene.rows.iter().find(|r| r.key == "OUT").unwrap().parent.as_deref(),
@@ -1954,6 +2347,42 @@ mod tests {
     }
 
     #[test]
+    fn shared_fanin_scope_resolution_is_memoized_per_task() {
+        let mut tasks = vec![
+            serde_json::json!({
+                "id": "F0", "kind": "impl", "project": "P", "state": "done",
+                "deps": [], "attempts": []
+            }),
+            serde_json::json!({
+                "id": "F1", "kind": "impl", "project": "P", "state": "done",
+                "deps": [], "attempts": []
+            }),
+        ];
+        for i in 2..32 {
+            tasks.push(serde_json::json!({
+                "id": format!("F{i}"), "kind": "gate", "state": "queued", "deps": [],
+                "inputs": [format!("F{}", i - 1), format!("F{}", i - 2)], "attempts": []
+            }));
+        }
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 3,
+            "run": {"id": "shared-fanin"},
+            "projects": [{"id": "P", "title": "Core"}],
+            "tasks": tasks
+        }))
+        .unwrap();
+
+        let ix = Ix::new(&doc);
+        assert_eq!(ix.scope_resolution_evaluations, 32, "each task body resolves once");
+        assert!(
+            ix.scope_resolution_calls <= 32 * 3,
+            "one outer lookup plus at most two fan-in edges per task: {} calls",
+            ix.scope_resolution_calls
+        );
+        assert!((0..32).all(|ti| ix.task_project(ti) == Some(0)));
+    }
+
+    #[test]
     fn project_summary_does_not_hide_lost_failed_or_unverified_work() {
         let doc: Doc = serde_json::from_value(serde_json::json!({
             "dagr": 2,
@@ -1997,7 +2426,7 @@ mod tests {
         .unwrap();
         let scene = build(&doc, None, None, None, &ViewOpts::default());
         let b = scene.rows.iter().find(|r| r.key == "B1").unwrap();
-        assert_eq!(b.parent, None);
+        assert_eq!(b.parent.as_deref(), Some("project:B"));
         assert!(b.chips.iter().any(|s| s.0.contains("⇠ A1")));
     }
 
@@ -2019,7 +2448,7 @@ mod tests {
 
             let scene = build(&doc, None, None, None, &ViewOpts::default());
             let gate = scene.rows.iter().find(|r| r.name == "G").expect("gate row");
-            assert_eq!(gate.glyph, '⋈');
+            assert_eq!(gate.glyph, style::state_glyph("working"));
             assert_eq!(gate.glyph_color, expected_color);
             assert_eq!(gate.status.first().map(|s| s.0.as_str()), Some(status_word));
         }
@@ -2033,7 +2462,7 @@ mod tests {
         ]));
         let scene = build(&canceled, None, None, None, &ViewOpts::default());
         let gate = scene.rows.iter().find(|r| r.name == "G").expect("gate row");
-        assert_eq!(gate.glyph, '⋈');
+        assert_eq!(gate.glyph, style::state_glyph("working"));
         assert_eq!(gate.glyph_color, style::MUTED);
         assert_eq!(gate.status.first().map(|s| s.0.as_str()), Some("canceled"));
     }
@@ -2107,7 +2536,64 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_replaces_only_the_latest_attempt_row() {
+    fn queued_attempt_actor_drives_every_task_projection() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 3,
+            "run": {"id": "attempt-owner"},
+            "projects": [{"id": "P", "title": "Core"}],
+            "tasks": [
+                {"id": "ROOT", "title": "root", "kind": "impl", "project": "P",
+                 "state": "done", "deps": [], "attempts": [
+                    {"id": "ROOT·a1", "n": 1, "state": "done"}
+                 ]},
+                {"id": "A", "title": "assigned by attempt", "kind": "impl", "project": "P",
+                 "state": "queued", "deps": ["ROOT"], "attempts": [
+                    {"id": "A·a1", "n": 1, "state": "queued", "actor": "dev"}
+                 ]}
+            ]
+        }))
+        .unwrap();
+
+        let open = build(&doc, None, None, None, &ViewOpts::default());
+        let task = open.rows.iter().find(|row| row.task_id == "A").unwrap();
+        let task_status = task.status.iter().map(|seg| seg.0.as_str()).collect::<String>();
+        assert_eq!((task.state.as_str(), task_status.as_str()), ("ready", "ready"));
+        assert_eq!(selection_state(&doc, "A").as_deref(), Some("ready"));
+        assert_eq!(selection_state(&doc, "A·a1").as_deref(), Some("ready"));
+        let project = open.rows.iter().find(|row| row.key == "project:P").unwrap();
+        let project_status = project.status.iter().map(|seg| seg.0.as_str()).collect::<String>();
+        assert!(project_status.contains("1 ready"), "{project_status}");
+        assert!(!project_status.contains("unassigned"), "{project_status}");
+        assert!(open.queue.iter().all(|item| item.task_id != "A"));
+
+        let folded: std::collections::HashSet<String> = ["ROOT·a1".to_string()].into();
+        let closed = build(
+            &doc,
+            None,
+            None,
+            None,
+            &ViewOpts { zoom: None, folded: Some(&folded) },
+        );
+        let aggregate = closed
+            .rows
+            .iter()
+            .find(|row| row.key == "ROOT·a1")
+            .and_then(|row| row.fold.as_ref())
+            .unwrap()
+            .segs
+            .iter()
+            .map(|seg| seg.0.as_str())
+            .collect::<String>();
+        assert!(aggregate.contains("1 ready"), "{aggregate}");
+        assert!(!aggregate.contains("unassigned"), "{aggregate}");
+
+        let focus = crate::render::focus_card(&doc, "A", 48, None, &[]).join("\n");
+        assert!(focus.contains("· READY"), "{focus}");
+        assert!(!focus.contains("QUEUED"), "{focus}");
+    }
+
+    #[test]
+    fn cancellation_adds_a_stub_without_repainting_attempt_history() {
         let doc = queued_tasks(serde_json::json!([
             {"id": "C", "title": "withdrawn", "kind": "impl", "state": "canceled",
              "deps": [], "attempts": [
@@ -2120,10 +2606,12 @@ mod tests {
         let scene = build(&doc, None, None, None, &ViewOpts::default());
         let first = scene.rows.iter().find(|row| row.key == "C·a1").unwrap();
         let latest = scene.rows.iter().find(|row| row.key == "C·a2").unwrap();
+        let current = scene.rows.iter().find(|row| row.key == "C").unwrap();
         assert_eq!((first.state.as_str(), first.glyph), ("done", '●'));
-        assert_eq!((latest.state.as_str(), latest.glyph), ("canceled", '×'));
-        assert!(scene.queue.is_empty(), "canceled work is terminal, not a lost alarm");
-        assert_eq!(settled_roots(&doc), ["C·a1"]);
+        assert_eq!((latest.state.as_str(), latest.glyph), ("lost", '?'));
+        assert_eq!((current.state.as_str(), current.glyph), ("canceled", '×'));
+        assert_eq!(scene.queue.iter().map(|item| item.state.as_str()).collect::<Vec<_>>(), ["lost"]);
+        assert!(settled_roots(&doc).is_empty());
     }
 
     #[test]
@@ -2145,7 +2633,7 @@ mod tests {
         let current = scene.rows.iter().find(|row| row.key == "R").unwrap();
         let downstream = scene.rows.iter().find(|row| row.key == "X").unwrap();
         assert_eq!((failed.state.as_str(), failed.glyph), ("failed", '✗'));
-        assert_eq!((current.state.as_str(), current.glyph), ("queued", '○'));
+        assert_eq!((current.state.as_str(), current.glyph), ("ready", '○'));
         assert_eq!(current.parent.as_deref(), Some("R·a1"));
         assert_eq!(downstream.parent.as_deref(), Some("R"));
         assert_eq!(
@@ -2171,8 +2659,8 @@ mod tests {
         assert_eq!(chip.hot, Some(crate::style::BLOCKED));
         let text: String = chip.segs.iter().map(|Seg(s, _)| s.as_str()).collect();
         assert_eq!(scene.rows[0].glyph, '▸');
-        assert_eq!(scene.rows[0].name, "4 items");
-        assert!(scene.rows[0].title.contains("from A"));
+        assert_eq!(scene.rows[0].name, "A");
+        assert!(scene.rows[0].title.contains("4 items"));
         assert!(text.contains("1 blocked") && text.contains("3 done"), "{text}");
     }
 
@@ -2246,5 +2734,344 @@ mod tests {
         let c = scene.rows.iter().find(|r| r.key == "C·a1").unwrap();
         assert!(row_matches(c, "c·a1") && row_matches(c, "impl: c") && row_matches(c, "C"));
         assert!(!row_matches(c, "impl: d"));
+    }
+
+    fn project_navigation_doc() -> Doc {
+        serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "projects", "title": "project navigation"},
+            "projects": [
+                {"id": "ROOT", "title": "Recovery"},
+                {"id": "CHILD", "title": "Core", "parent": "ROOT"},
+                {"id": "EMPTY", "title": "Empty", "parent": "ROOT"},
+                {"id": "OUT", "title": "Outside"}
+            ],
+            "tasks": [
+                {"id": "PLAN", "title": "plan", "kind": "plan", "project": "CHILD",
+                 "owner": "lead", "state": "done", "deps": [], "attempts": [
+                    {"id": "PLAN·a1", "n": 1, "state": "done"}
+                 ]},
+                {"id": "DEV", "title": "develop", "kind": "impl", "project": "CHILD",
+                 "owner": "dev", "state": "queued", "deps": ["PLAN"], "attempts": []},
+                {"id": "OUTSIDE", "title": "outside", "kind": "impl", "project": "OUT",
+                 "state": "queued", "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn projects_are_selectable_foldable_nodes_with_connected_navigation() {
+        let doc = project_navigation_doc();
+        let open = build(&doc, None, None, None, &ViewOpts::default());
+        let row = |key: &str| open.rows.iter().find(|row| row.key == key).unwrap();
+
+        assert!(row("project:ROOT").selectable);
+        assert!(row("project:ROOT").has_kids);
+        assert_eq!(row("project:CHILD").parent.as_deref(), Some("project:ROOT"));
+        assert_eq!(row("PLAN·a1").parent.as_deref(), Some("project:CHILD"));
+        assert_eq!(row("DEV").parent.as_deref(), Some("PLAN·a1"));
+        assert_eq!(
+            ancestors(&doc, "DEV"),
+            ["PLAN·a1", "project:CHILD", "project:ROOT"]
+        );
+        assert!(key_exists(&doc, "project:CHILD"));
+
+        let folded: std::collections::HashSet<String> = ["project:ROOT".to_string()].into();
+        let closed = build(
+            &doc,
+            Some("project:ROOT"),
+            None,
+            None,
+            &ViewOpts {
+                zoom: None,
+                folded: Some(&folded),
+            },
+        );
+        assert_eq!(
+            closed.rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
+            ["project:ROOT", "project:OUT", "OUTSIDE"]
+        );
+        let root = closed.rows.iter().find(|row| row.key == "project:ROOT").unwrap();
+        assert_eq!(root.glyph, '▸');
+        assert!(root.fold.is_some());
+        assert_eq!(root.name, "ROOT", "a project fold preserves its identity");
+
+        let zoomed = build(
+            &doc,
+            Some("project:CHILD"),
+            None,
+            None,
+            &ViewOpts {
+                zoom: Some("project:CHILD"),
+                folded: None,
+            },
+        );
+        assert_eq!(
+            zoomed.rows.iter().map(|row| row.key.as_str()).collect::<Vec<_>>(),
+            ["project:CHILD", "PLAN·a1", "DEV"]
+        );
+    }
+
+    #[test]
+    fn local_and_cross_project_gates_have_truthful_structural_parents() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "gates"},
+            "projects": [
+                {"id": "P", "title": "Product"},
+                {"id": "A", "title": "A", "parent": "P"},
+                {"id": "B", "title": "B", "parent": "P"},
+                {"id": "C", "title": "C"}
+            ],
+            "tasks": [
+                {"id": "A1", "title": "a1", "kind": "impl", "project": "A",
+                 "state": "queued", "deps": [], "attempts": []},
+                {"id": "A2", "title": "a2", "kind": "impl", "project": "A",
+                 "state": "queued", "deps": ["A1"], "attempts": []},
+                {"id": "LOCAL", "title": "local", "kind": "gate", "state": "queued",
+                 "inputs": ["A1", "A2"], "deps": [], "attempts": []},
+                {"id": "B1", "title": "b1", "kind": "impl", "project": "B",
+                 "state": "queued", "deps": [], "attempts": []},
+                {"id": "SHARED", "title": "shared", "kind": "gate", "state": "queued",
+                 "inputs": ["A2", "B1"], "deps": [], "attempts": []},
+                {"id": "C1", "title": "c1", "kind": "impl", "project": "C",
+                 "state": "queued", "deps": [], "attempts": []},
+                {"id": "CROSS", "title": "cross", "kind": "gate", "state": "queued",
+                 "inputs": ["SHARED", "C1"], "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let parent = |key: &str| {
+            scene
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .unwrap()
+                .parent
+                .as_deref()
+        };
+        assert_eq!(parent("LOCAL"), Some("project:A"));
+        assert_eq!(parent("SHARED"), Some("project:P"));
+        assert_eq!(parent("CROSS"), None, "cross-top-level gates live at the run root");
+    }
+
+    #[test]
+    fn folded_and_project_rollups_share_ready_waiting_and_needs_answer_signals() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "signals"},
+            "projects": [{"id": "P", "title": "Signals"}],
+            "tasks": [
+                {"id": "ROOT", "title": "root", "kind": "impl", "project": "P",
+                 "state": "done", "deps": [], "attempts": [
+                    {"id": "ROOT·a1", "n": 1, "state": "done"}
+                 ]},
+                {"id": "READY", "title": "ready", "kind": "impl", "project": "P",
+                 "owner": "dev", "state": "queued", "deps": ["ROOT"], "attempts": []},
+                {"id": "WAIT", "title": "waiting", "kind": "impl", "project": "P",
+                 "owner": "dev", "state": "queued", "deps": ["READY"], "attempts": []},
+                {"id": "QUESTION", "title": "choose", "kind": "question", "project": "P",
+                 "owner": "operator", "state": "queued", "deps": ["ROOT"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let open = build(&doc, None, None, None, &ViewOpts::default());
+        let status = |key: &str| {
+            open.rows
+                .iter()
+                .find(|row| row.key == key)
+                .unwrap()
+                .status
+                .iter()
+                .map(|seg| seg.0.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(status("READY"), "ready");
+        assert_eq!(status("WAIT"), "waits READY");
+        assert_eq!(status("QUESTION"), "needs answer");
+        let project = status("project:P");
+        assert!(project.contains("1 ready"), "{project}");
+        assert!(project.contains("1 waiting"), "{project}");
+        assert!(project.contains("1 needs answer"), "{project}");
+
+        let folded: std::collections::HashSet<String> = ["ROOT·a1".to_string()].into();
+        let closed = build(
+            &doc,
+            None,
+            None,
+            None,
+            &ViewOpts {
+                zoom: None,
+                folded: Some(&folded),
+            },
+        );
+        let aggregate = closed
+            .rows
+            .iter()
+            .find(|row| row.key == "ROOT·a1")
+            .unwrap()
+            .fold
+            .as_ref()
+            .unwrap()
+            .segs
+            .iter()
+            .map(|seg| seg.0.as_str())
+            .collect::<String>();
+        assert!(aggregate.contains("1 ready"), "{aggregate}");
+        assert!(aggregate.contains("1 waiting"), "{aggregate}");
+        assert!(aggregate.contains("1 needs answer"), "{aggregate}");
+    }
+
+    #[test]
+    fn canceled_tasks_keep_history_but_only_live_or_lost_work_alarms_rollups() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "canceled"},
+            "projects": [{"id": "P", "title": "Canceled"}],
+            "tasks": [
+                {"id": "QUIET", "title": "quiet", "kind": "impl", "project": "P",
+                 "state": "canceled", "deps": [], "attempts": [
+                    {"id": "QUIET·a1", "n": 1, "state": "failed"}
+                 ]},
+                {"id": "LIVE", "title": "live", "kind": "impl", "project": "P",
+                 "state": "canceled", "deps": [], "attempts": [
+                    {"id": "LIVE·a1", "n": 1, "state": "working"}
+                 ]},
+                {"id": "LOST", "title": "lost", "kind": "impl", "project": "P",
+                 "state": "canceled", "deps": [], "attempts": [
+                    {"id": "LOST·a1", "n": 1, "state": "lost"}
+                 ]}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        for (key, state) in [
+            ("QUIET·a1", "failed"),
+            ("QUIET", "canceled"),
+            ("LIVE·a1", "working"),
+            ("LIVE", "canceled"),
+            ("LOST·a1", "lost"),
+            ("LOST", "canceled"),
+        ] {
+            assert_eq!(
+                scene.rows.iter().find(|row| row.key == key).unwrap().state,
+                state,
+                "{key}"
+            );
+        }
+        let project = scene.rows.iter().find(|row| row.key == "project:P").unwrap();
+        let summary = project.status.iter().map(|seg| seg.0.as_str()).collect::<String>();
+        assert!(summary.contains("1 canceled"), "quiet cancellation is counted: {summary}");
+        assert!(summary.contains("1 working"), "live exception survives: {summary}");
+        assert!(summary.contains("1 lost"), "lost exception survives: {summary}");
+        assert!(!summary.contains("failed"), "discarded failure is not project truth: {summary}");
+        assert_eq!(
+            scene.queue.iter().map(|item| item.state.as_str()).collect::<Vec<_>>(),
+            ["lost", "working"]
+        );
+
+        let folded: std::collections::HashSet<String> = ["project:P".to_string()].into();
+        let closed = build(
+            &doc,
+            None,
+            None,
+            None,
+            &ViewOpts { zoom: None, folded: Some(&folded) },
+        );
+        let aggregate = closed.rows[0]
+            .fold
+            .as_ref()
+            .unwrap()
+            .segs
+            .iter()
+            .map(|seg| seg.0.as_str())
+            .collect::<String>();
+        assert!(
+            aggregate.contains("1 canceled")
+                && aggregate.contains("1 working")
+                && aggregate.contains("1 lost"),
+            "{aggregate}"
+        );
+        assert!(!aggregate.contains("failed"), "discarded history stays out: {aggregate}");
+    }
+
+    #[test]
+    fn malformed_row_identities_render_but_are_never_interactive() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "bad-identities"},
+            "projects": [
+                {"id": "DUP", "title": "left"},
+                {"id": "DUP", "title": "right"},
+                {"id": "", "title": "empty"},
+                {"id": "X", "title": "project-key-collision"}
+            ],
+            "tasks": [
+                {"id": "T", "title": "left", "kind": "impl", "state": "queued",
+                 "deps": [], "attempts": []},
+                {"id": "T", "title": "right", "kind": "impl", "state": "queued",
+                 "deps": [], "attempts": []},
+                {"id": "", "title": "empty", "kind": "impl", "state": "queued",
+                 "deps": [], "attempts": []},
+                {"id": "A", "title": "attempt-left", "kind": "impl", "state": "working",
+                 "deps": [], "attempts": [{"id": "ATT", "n": 1, "state": "working"}]},
+                {"id": "B", "title": "attempt-right", "kind": "impl", "state": "working",
+                 "deps": [], "attempts": [{"id": "ATT", "n": 1, "state": "working"}]},
+                {"id": "BAD\u{001b}", "title": "control-id", "kind": "impl", "state": "queued",
+                 "deps": [], "attempts": []},
+                {"id": "project:X", "title": "task-key-collision", "kind": "impl", "state": "queued",
+                 "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, Some("T"), None, None, &ViewOpts::default());
+        assert_eq!(scene.rows.iter().filter(|row| row.title == "left").count(), 2);
+        assert_eq!(scene.rows.iter().filter(|row| row.title == "right").count(), 2);
+        assert!(scene
+            .rows
+            .iter()
+            .filter(|row| matches!(row.title.as_str(), "left" | "right" | "empty"))
+            .all(|row| !row.selectable));
+        assert!(scene
+            .rows
+            .iter()
+            .filter(|row| matches!(row.title.as_str(), "attempt-left" | "attempt-right" | "control-id"))
+            .all(|row| !row.selectable));
+        assert!(scene
+            .rows
+            .iter()
+            .filter(|row| row.title.ends_with("key-collision"))
+            .all(|row| !row.selectable));
+        assert!(scene.selected_task.is_none());
+        assert!(!key_exists(&doc, "T"));
+        assert!(!key_exists(&doc, "project:DUP"));
+        assert!(!key_exists(&doc, "ATT"));
+        assert!(!key_exists(&doc, "BAD\u{1b}"));
+    }
+
+    #[test]
+    fn malformed_project_cycles_render_once_and_stop() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "cycle"},
+            "projects": [
+                {"id": "A", "title": "A", "parent": "B"},
+                {"id": "B", "title": "B", "parent": "A"}
+            ],
+            "tasks": [
+                {"id": "T", "title": "task", "kind": "impl", "project": "A",
+                 "state": "queued", "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        assert_eq!(scene.rows.iter().filter(|row| row.project).count(), 2);
+        assert_eq!(scene.rows.iter().filter(|row| row.task_id == "T").count(), 1);
     }
 }

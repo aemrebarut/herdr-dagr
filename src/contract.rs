@@ -1,4 +1,4 @@
-//! Serde types for the dagr run-state contract, v1 (see CONTRACT.md).
+//! Serde types for the dagr run-state contract, v3 (see CONTRACT.md).
 //!
 //! Parsing is deliberately permissive: every field is optional at the type
 //! level and unknown fields are ignored, so structurally sparse documents
@@ -13,11 +13,10 @@
 
 use serde::Deserialize;
 
-/// Version 2 adds optional recursive projects and an orchestrator locator.
-/// Version 1 remains readable so existing run files gain the corrected gate
-/// projection without a migration ceremony.
-pub const CONTRACT_VERSION: u64 = 2;
-pub const CONTRACT_VERSIONS: &[u64] = &[1, 2];
+/// Version 3 makes the contextual composer the sole user-facing action.
+/// Versions 1 and 2 remain readable without activating their legacy argv.
+pub const CONTRACT_VERSION: u64 = 3;
+pub const CONTRACT_VERSIONS: &[u64] = &[1, 2, 3];
 
 pub const TASK_STATES: &[&str] = &[
     "queued", "working", "review", "blocked", "done", "failed", "rejected", "canceled",
@@ -36,10 +35,12 @@ pub const EVENT_TYPES: &[&str] = &[
     "attempt_started", "attempt_settled", "promoted", "directive", "message_resolved", "note",
 ];
 pub const DIRECTIVE_VERBS: &[&str] = &["reject", "unblock", "answer", "rule"];
-/// Placeholders an action argv template may use (CONTRACT §9).
-pub const ACTION_PLACEHOLDERS: &[&str] = &["{task}", "{attempt}", "{operator}", "{text}", "{key}"];
-/// Verbs the pane binds to keys: u / a / o / x.
-pub const BOUND_ACTIONS: &[&str] = &["unblock", "answer", "accept", "reject"];
+/// Identities are interaction handles, not just labels. Empty/blank ids and
+/// terminal-active controls cannot safely name a selectable row or action.
+/// The validator reports them and the view keeps their rows visible but inert.
+pub fn valid_identity(id: &str) -> bool {
+    !id.trim().is_empty() && !id.chars().any(crate::style::terminal_active)
+}
 
 #[derive(Deserialize)]
 pub struct Doc {
@@ -53,29 +54,9 @@ pub struct Doc {
     pub tasks: Option<Vec<Task>>,
     #[serde(default)]
     pub events: Vec<Event>,
-    /// §9 optional extension: verb → producer CLI template.
-    pub actions: Option<std::collections::BTreeMap<String, ActionTpl>>,
-}
-
-#[derive(Deserialize)]
-pub struct ActionTpl {
-    /// Kept as raw values so a non-string element is a per-field E190
-    /// with a JSON path, not a whole-document E001.
-    pub argv: Option<Vec<serde_json::Value>>,
-}
-
-impl ActionTpl {
-    /// The template as strings — `None` unless EVERY element is a
-    /// string. A malformed template must fail loudly; dropping the bad
-    /// element would silently repair it into a different argv than the
-    /// one the producer declared.
-    pub fn argv_strings(&self) -> Option<Vec<String>> {
-        self.argv
-            .as_ref()?
-            .iter()
-            .map(|x| x.as_str().map(String::from))
-            .collect()
-    }
+    /// v1/v2 producer argv declarations are accepted as opaque history.
+    /// v3 never validates, binds, expands, or executes this data.
+    pub actions: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]

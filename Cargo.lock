@@ -41,10 +41,9 @@ dependencies = [
 
 [[package]]
 name = "dagr"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crossterm",
- "libc",
  "serde",
  "serde_json",
  "unicode-width",

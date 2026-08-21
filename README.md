@@ -124,7 +124,7 @@ to the orchestrator; dagr never becomes a second workflow engine.
 
 ```mermaid
 flowchart LR
-    swarm["agent swarm<br/>(orchestrator + workers)"] -->|"writes run state<br/>(contract v2)"| run[("run.json")]
+    swarm["agent swarm<br/>(orchestrator + workers)"] -->|"writes run state<br/>(contract v3)"| run[("run.json")]
     run -->|"watches"| view["dagr view<br/>(herdr pane)"]
     run --> check["dagr check · dagr stats<br/>(lint / flow analytics)"]
     view -->|"contextual message<br/>+ explicit authority"| orch["orchestrator input queue<br/>(Herdr)"]
@@ -185,7 +185,8 @@ attempt's herdr pane, `m` opens the orchestrator message composer,
 `r` reloads, `?` opens help, and `q` quits. In the composer, `tab` cycles
 Use judgment / Get guidance / Snooze, `ctrl-t` changes authority, and all
 text remains editable. An adjacent `actions.json` can replace or add a few
-prompt starters without code or onboarding.
+prompt starters without code or onboarding. Model, reasoning, and multi-agent
+requests remain ordinary text.
 
 Big runs get noisy, so the tree folds and zooms. `←` replaces the branch
 under the cursor with one `▸ N items` aggregate row; it keeps blocked,
@@ -208,8 +209,8 @@ click a `▸` chip to unfold it, double-click a row to zoom into it,
 scroll to move the cursor, and drag across anything to select text,
 which lands on your clipboard when you let go. The message action in the
 focus card is clickable; Enter remains the deliberate submission step.
-Legacy v1 `u/a/o/x` producer-CLI actions remain available behind their exact
-argv confirmation gate when a run explicitly declares them.
+Legacy v1/v2 action data remains readable but has no key binding or execution
+path.
 
 ## Install
 
@@ -272,7 +273,7 @@ Cargo is required only when building from source.
 
 ## Repo layout
 
-- [`CONTRACT.md`](CONTRACT.md): contract v2 (v1 remains readable), including
+- [`CONTRACT.md`](CONTRACT.md): contract v3 (v1/v2 remain readable), including
   recursive projects, scope-correct gates, and correlated operator messages.
 - [`src/`](src/): the `dagr` binary (Rust; serde + crossterm +
   unicode-width). `dagr check` lints a run file against the contract
@@ -286,9 +287,7 @@ Cargo is required only when building from source.
   as data (every task/attempt state, all four evidence tiers), the
   renderer's regression fixture.
 - [`demos/`](demos/): `selfrun/` (this repo's own development as a run
-  file, produced by an agent onboarded with only the producer skill)
-  and `actions/` (the confirm-gated send-back loop, with a reference
-  producer CLI).
+  file, produced by an agent onboarded with only the producer skill).
 - [`skills/dagr-producer/`](skills/dagr-producer/SKILL.md): the skill
   that teaches any agent to set up and maintain a run graph against the
   contract, looping on `dagr check` for feedback. Install it with
@@ -300,9 +299,10 @@ Cargo is required only when building from source.
 
 ## Status
 
-**v0.2.0.** Contract v2 adds recursive project scopes, scope-level gate
-milestones, truthful cross-project edges, aggregate folds, and durable
-contextual messages to the orchestrator. Existing v1 runs remain readable.
+**v0.3.0.** Contract v3 makes the editable message composer the sole action
+path while v1/v2 files remain readable with legacy action data inert. Each
+submission records its run, task, revision, starter, authority, and exact text
+before one addressed Herdr delivery.
 The release includes checksum-verified standalone binaries for macOS
 (Apple or Intel), Linux (x86-64 or ARM64), and Windows x86-64, with Cargo
 needed only for source-build fallback. Contract, model, renderer,

@@ -50,7 +50,8 @@ pub fn state_color(state: &str) -> u8 {
         "working" => WORKING,
         "blocked" => BLOCKED,
         "review" => REVIEW,
-        "queued" => QUEUED,
+        "queued" | "waiting" | "unassigned" => QUEUED,
+        "ready" => DONE,
         "failed" => FAILED,
         "rejected" => REJECTED,
         "canceled" => MUTED,
@@ -72,7 +73,7 @@ pub fn state_glyph(state: &str) -> char {
         "working" => '◎',
         "blocked" => '■',
         "review" => '◈',
-        "queued" => '○',
+        "queued" | "waiting" | "ready" | "unassigned" => '○',
         "failed" | "rejected" => '✗',
         "canceled" => '×',
         "settled_unverified" => '◌',
@@ -80,6 +81,32 @@ pub fn state_glyph(state: &str) -> char {
         "needs_answer" => '◈',
         _ => '·',
     }
+}
+
+/// Characters that can change terminal state or reorder visible text. This is
+/// intentionally a small terminal-safety set, not a generated Unicode policy.
+pub fn terminal_active(c: char) -> bool {
+    matches!(c as u32, 0x00..=0x1f | 0x7f..=0x9f | 0x061c | 0x200e..=0x200f | 0x2028..=0x202e | 0x2066..=0x2069)
+}
+
+/// Escape producer text at the display boundary. Backslashes are left alone,
+/// making repeated boundary calls idempotent while the source document remains
+/// untouched.
+pub fn terminal_safe(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) <= 0xff && terminal_active(c) => {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c if terminal_active(c) => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Evidence tier → (glyph, color). The "how do we know" primitive.
@@ -120,7 +147,7 @@ impl Line {
     pub fn put(&mut self, x: usize, s: &str, style: Style) -> usize {
         use unicode_width::UnicodeWidthChar;
         let mut xi = x;
-        for c in s.chars() {
+        for c in terminal_safe(s).chars() {
             let cw = c.width().unwrap_or(0);
             if cw == 0 {
                 continue;
@@ -188,7 +215,7 @@ pub fn paint(s: &str, style: Style) -> String {
     if let Some(c) = style.fg {
         out.push_str(&format!("\x1b[38;5;{c}m"));
     }
-    out.push_str(s);
+    out.push_str(&terminal_safe(s));
     out.push_str("\x1b[0m");
     out
 }
@@ -197,6 +224,8 @@ pub fn paint(s: &str, style: Style) -> String {
 /// combining marks count zero.
 pub fn trunc(s: &str, n: usize) -> String {
     use unicode_width::UnicodeWidthChar;
+    let safe = terminal_safe(s);
+    let s = safe.as_str();
     let total: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
     if total <= n {
         return s.to_string();
@@ -216,4 +245,25 @@ pub fn trunc(s: &str, n: usize) -> String {
     }
     t.push('…');
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_controls_become_visible_text_only_at_paint_boundaries() {
+        let source = "title\n\x1b[31m\u{202e}tail".to_string();
+        assert_eq!(
+            terminal_safe(&source),
+            "title\\n\\x1b[31m\\u{202e}tail"
+        );
+        assert_eq!(source.as_bytes()[5], b'\n', "source stays byte-for-byte unchanged");
+
+        let mut line = Line::new(80);
+        line.put(0, &source, Style::plain());
+        let rendered = line.render(None, false);
+        assert!(!rendered.contains("\x1b[31m"));
+        assert!(rendered.contains("\\x1b[31m\\u{202e}"), "{rendered:?}");
+    }
 }

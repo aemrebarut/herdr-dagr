@@ -4,9 +4,7 @@
 //! reference. The renderer never crashes on bad input: contract errors
 //! become a banner, and the last good scene stays up.
 
-use crate::{
-    action, check, contract::Doc, herdr, message, model, picker, render, select, stats, style,
-};
+use crate::{check, contract::Doc, herdr, message, model, picker, render, select, stats, style};
 use crossterm::{
     cursor, event, execute, queue,
     terminal::{self, ClearType},
@@ -28,20 +26,16 @@ struct Loaded {
     generated_min: Option<i64>,
     /// flow chip, computed once per (re)load — never per frame (M4 F17)
     chip: Option<String>,
-    /// E19x findings against action templates, as (code, path). The
-    /// banner alone tells the operator "something is wrong somewhere";
-    /// `start_action` uses these to refuse the specific broken template
-    /// instead of running a repaired-or-different command (M4 F7).
-    action_findings: Vec<(String, String)>,
     message_starters: Vec<message::Starter>,
     message_config_path: std::path::PathBuf,
     message_summaries: Vec<message::Summary>,
 }
 
 fn load(path: &str) -> Result<Loaded, String> {
-    let raw = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let raw = crate::scale::read_limited(path)?;
     let doc: Doc =
         serde_json::from_str(&raw).map_err(|e| format!("not a contract document: {e}"))?;
+    crate::scale::enforce_document(&doc)?;
     let report = check::check(&doc);
     let mut banner = match report.errors() {
         0 => None,
@@ -50,12 +44,6 @@ fn load(path: &str) -> Result<Loaded, String> {
             if n == 1 { "" } else { "s" }
         )),
     };
-    let action_findings = report
-        .findings
-        .iter()
-        .filter(|f| f.code.starts_with("E19"))
-        .map(|f| (f.code.to_string(), f.path.clone()))
-        .collect();
     let generated_min = doc.generated_at.as_deref().and_then(model::parse_min);
     let chip = stats::header_chip(&doc);
     let config = message::load_config(std::path::Path::new(path));
@@ -81,7 +69,6 @@ fn load(path: &str) -> Result<Loaded, String> {
         banner,
         generated_min,
         chip,
-        action_findings,
         message_starters: config.starters,
         message_config_path: config.path,
         message_summaries,
@@ -158,12 +145,9 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
 
 // ── interactive ─────────────────────────────────────────────────────
 
-/// Modal state for §9 actions: Normal → (Input →) Confirm → Normal.
-/// Nothing runs until the human sees the exact argv and confirms.
+/// The only user-facing action is an editable contextual message.
 enum Mode {
     Normal,
-    Input { pending: action::Pending, buf: String },
-    Confirm { pending: action::Pending, since: std::time::Instant },
     /// `f` — the run-file picker (its own frame, like help).
     Picker(picker::State),
     /// `/` — incremental row search; the query lives on the bottom line.
@@ -171,90 +155,6 @@ enum Mode {
     /// One editable contextual message. Starters only prefill text;
     /// authority remains a separate field and Herdr owns delivery.
     Message { draft: message::Draft },
-}
-
-/// How long the confirm gate must have been on screen before `y`
-/// counts. Keys already sitting in the terminal's input queue when the
-/// gate appears (a paste tail, a reflex) arrive within milliseconds of
-/// each other; a read-and-decide does not.
-const CONFIRM_ARM: Duration = Duration::from_millis(400);
-
-/// What a modal keypress asks the event loop to do. Pure data: the loop
-/// performs it, tests assert it.
-enum ModalStep {
-    Stay(Mode),
-    /// → Normal, with a flash.
-    Cancel(&'static str),
-    /// Intent complete and finalized: show the confirm gate.
-    ToConfirm(action::Pending),
-    /// The human confirmed a visible, armed gate: run it.
-    Execute(action::Pending),
-}
-
-/// The modal transition for one key event. `armed` = the gate has been
-/// up at least CONFIRM_ARM; `seen` = its lines were inside the viewport
-/// on the last draw. `y` executes only when both hold (F1, F3).
-fn modal_step(
-    mode: Mode,
-    code: event::KeyCode,
-    mods: event::KeyModifiers,
-    armed: bool,
-    seen: bool,
-) -> ModalStep {
-    use event::KeyCode::*;
-    let ctrl = mods.contains(event::KeyModifiers::CONTROL);
-    let plain = !mods.intersects(event::KeyModifiers::CONTROL | event::KeyModifiers::ALT);
-    match mode {
-        Mode::Normal => ModalStep::Stay(Mode::Normal),
-        Mode::Input { mut pending, mut buf } => match code {
-            Esc => ModalStep::Cancel("cancelled"),
-            Char('c') if ctrl => ModalStep::Cancel("cancelled"),
-            Enter => {
-                pending.fill_text(&buf);
-                // the key hashes the typed text, so the argv can only be
-                // finalized now — and the confirm gate shows exactly it
-                pending.finalize();
-                ModalStep::ToConfirm(pending)
-            }
-            Backspace => {
-                buf.pop();
-                ModalStep::Stay(Mode::Input { pending, buf })
-            }
-            // line editing: the reflexes must edit, not type literal
-            // letters into the reason
-            Char('u') if ctrl => {
-                buf.clear();
-                ModalStep::Stay(Mode::Input { pending, buf })
-            }
-            Char('w') if ctrl => {
-                while buf.chars().last().is_some_and(|c| c == ' ') {
-                    buf.pop();
-                }
-                while buf.chars().last().is_some_and(|c| c != ' ') {
-                    buf.pop();
-                }
-                ModalStep::Stay(Mode::Input { pending, buf })
-            }
-            Char(c) if plain => {
-                buf.push(c);
-                ModalStep::Stay(Mode::Input { pending, buf })
-            }
-            _ => ModalStep::Stay(Mode::Input { pending, buf }),
-        },
-        Mode::Confirm { pending, since } => match code {
-            // 'y' ONLY — exactly what the prompt advertises. Enter must
-            // not run: a reflexive second Enter straight out of the text
-            // prompt would be an undisclosed execution path. And even
-            // 'y' is inert until the gate has actually been on screen
-            // long enough to have been read (F1, F3).
-            Char('y') if plain && armed && seen => ModalStep::Execute(pending),
-            Esc | Char('n') => ModalStep::Cancel("cancelled"),
-            Char('c') if ctrl => ModalStep::Cancel("cancelled"),
-            _ => ModalStep::Stay(Mode::Confirm { pending, since }),
-        },
-        // picker, search, and message keys are handled by the event loop directly
-        m => ModalStep::Stay(m),
-    }
 }
 
 struct App {
@@ -267,9 +167,6 @@ struct App {
     scroll: usize,
     herdr: Option<herdr::Link>,
     mode: Mode,
-    /// Whether the modal prompt's lines were inside the viewport on the
-    /// last draw. `y` is inert until this was true.
-    gate_seen: bool,
     /// In-flight focus result (focus runs off-thread; even a bounded CLI
     /// wait has no business freezing the render loop).
     bg_rx: Option<std::sync::mpsc::Receiver<String>>,
@@ -737,13 +634,20 @@ impl App {
 
     fn focus(&mut self) {
         let locator = self.selected.as_deref().and_then(|k| {
+            let (_, attempt) = self.task_target()?;
+            if attempt != k {
+                return None;
+            }
             let tasks = self.loaded.doc.tasks.as_deref()?;
-            tasks
+            let mut matches = tasks
                 .iter()
                 .flat_map(|t| t.attempts.iter())
-                .find(|a| a.id.as_deref() == Some(k))
-                .and_then(|a| a.locator.as_ref())
-                .map(|l| (l.pane.clone(), l.agent.clone()))
+                .filter(|a| a.id.as_deref() == Some(k));
+            let attempt = matches.next()?;
+            if matches.next().is_some() {
+                return None;
+            }
+            attempt.locator.as_ref().map(|l| (l.pane.clone(), l.agent.clone()))
         });
         let msg = match locator {
             None => "no live locator on this row".into(),
@@ -791,28 +695,57 @@ impl App {
         }
     }
 
-    /// Selection → (task id, attempt id) for action placeholders.
-    fn action_target(&self) -> Option<(String, String)> {
+    /// Resolve the selected task and, when present, its current attempt.
+    fn task_target(&self) -> Option<(String, String)> {
         let sel = self.selected.as_deref()?;
+        if !crate::contract::valid_identity(sel)
+            || self.loaded.doc.projects.iter().any(|project| {
+                project.id.as_deref().is_some_and(|id| format!("project:{id}") == sel)
+            })
+        {
+            return None;
+        }
         let tasks = self.loaded.doc.tasks.as_deref()?;
+        let mut found = Vec::new();
         for t in tasks {
-            if t.attempts.iter().any(|a| a.id.as_deref() == Some(sel)) {
-                return Some((t.id.clone().unwrap_or_default(), sel.to_string()));
+            for attempt in &t.attempts {
+                if attempt.id.as_deref() == Some(sel) {
+                    found.push((t.id.clone().unwrap_or_default(), sel.to_string()));
+                }
+            }
+            if t.id.as_deref() == Some(sel) {
+                let latest = if crate::model::needs_current_stub(t) {
+                    String::new()
+                } else {
+                    t.attempts
+                        .iter()
+                        .max_by_key(|a| a.n.unwrap_or(0))
+                        .and_then(|a| a.id.clone())
+                        .unwrap_or_default()
+                };
+                found.push((sel.to_string(), latest));
             }
         }
-        tasks.iter().find(|t| t.id.as_deref() == Some(sel)).map(|t| {
-            let latest = t
-                .attempts
-                .iter()
-                .max_by_key(|a| a.n.unwrap_or(0))
-                .and_then(|a| a.id.clone())
-                .unwrap_or_default();
-            (sel.to_string(), latest)
-        })
+        if found.len() != 1 || !crate::contract::valid_identity(&found[0].0) {
+            return None;
+        }
+        let attempt = found[0].1.as_str();
+        if !attempt.is_empty()
+            && (!crate::contract::valid_identity(attempt)
+                || tasks
+                    .iter()
+                    .flat_map(|task| task.attempts.iter())
+                    .filter(|candidate| candidate.id.as_deref() == Some(attempt))
+                    .count()
+                    != 1)
+        {
+            return None;
+        }
+        Some(found.remove(0))
     }
 
     fn start_message(&mut self) {
-        let Some((target, _)) = self.action_target() else {
+        let Some((target, _)) = self.task_target() else {
             self.flash = Some(("select a task or gate first".into(), 8));
             return;
         };
@@ -835,6 +768,7 @@ impl App {
             std::path::Path::new(&self.path),
             &self.loaded.doc,
             &draft.target,
+            &draft.starter_id,
             &draft.text,
             draft.authority,
         );
@@ -917,84 +851,10 @@ impl App {
         }
     }
 
-    fn start_action(&mut self, key: char) {
-        let Some(verb) = action::verb_for_key(key) else { return };
-        // a template the validator flagged at load must not build: the
-        // banner said "N contract errors" but not WHERE; running a
-        // broken template anyway would silently exceed it (M4 F7)
-        let vp = format!("actions.{verb}");
-        if let Some((code, _)) = self
-            .loaded
-            .action_findings
-            .iter()
-            .find(|(_, path)| *path == vp || path.starts_with(&format!("{vp}.")))
-        {
-            self.flash =
-                Some((format!("{verb} template is invalid ({code}) — run dagr check"), 12));
-            return;
-        }
-        let Some((task_id, attempt_id)) = self.action_target() else {
-            self.flash = Some(("nothing selected".into(), 8));
-            return;
-        };
-        match action::build(&self.loaded.doc, verb, &task_id, &attempt_id) {
-            Err(e) => self.flash = Some((e, 12)),
-            Ok(pending) => {
-                if pending.needs_text() {
-                    self.mode = Mode::Input { pending, buf: String::new() };
-                } else {
-                    self.enter_confirm(pending);
-                }
-            }
-        }
-    }
-
-    /// Show the confirm gate. Everything already sitting in the
-    /// terminal's input queue is drained first: keys queued before the
-    /// gate existed cannot be a response to it.
-    fn enter_confirm(&mut self, pending: action::Pending) {
-        while event::poll(Duration::ZERO).unwrap_or(false) {
-            let _ = event::read();
-        }
-        self.gate_seen = false; // proven by the next draw
-        self.mode = Mode::Confirm { pending, since: std::time::Instant::now() };
-    }
-
-    /// The only place anything runs — after the human saw the exact
-    /// argv on screen and confirmed it. Runs off the UI thread.
-    fn execute(&mut self, pending: action::Pending) {
-        if self.bg_rx.is_some() {
-            // keep the confirmed intent — dropping it silently and
-            // blaming "another action" (there may be none — the guard
-            // is shared with [enter] focus) forces a full retype with
-            // no explanation
-            self.flash = Some((
-                "waiting on an earlier command — press y again in a moment".into(),
-                12,
-            ));
-            self.mode = Mode::Confirm { pending, since: std::time::Instant::now() };
-            return;
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        let verb = pending.verb.clone();
-        std::thread::spawn(move || {
-            let _ = tx.send(action::run(&pending));
-        });
-        self.bg_rx = Some(rx);
-        self.flash = Some((format!("running {verb}…"), 30));
-    }
-
     /// The modal prompt line, if any (drawn above the footer).
     fn prompt_line(&self) -> Option<String> {
         match &self.mode {
             Mode::Normal => None,
-            Mode::Input { pending, buf } => Some(format!(
-                "{} · text ({}▏) — enter to continue · esc to cancel",
-                pending.verb, buf
-            )),
-            Mode::Confirm { pending, .. } => {
-                Some(format!("run? {} — [y] run · [esc] cancel", pending.preview()))
-            }
             Mode::Message { draft } => {
                 let starter = self
                     .loaded
@@ -1022,21 +882,22 @@ impl App {
         // the frame is about to be rebuilt from a new revision; a
         // highlight anchored to the old lines would frame the wrong text
         self.sel = None;
-        // an open ACTION modal points at the document it was built from;
-        // carrying the intent silently across a revision can apply it to
-        // state the human never saw. The picker and search reference no
-        // document state — a producer rewriting the file every few
-        // seconds must not keep killing them.
-        if matches!(self.mode, Mode::Input { .. } | Mode::Confirm { .. }) {
-            self.mode = Mode::Normal;
-            self.flash = Some((
-                "run file changed — action cancelled; re-select and re-confirm".into(),
-                20,
-            ));
-        }
         match load(&self.path) {
             Ok(l) => {
                 self.loaded = l;
+                let stale_message = match &self.mode {
+                    Mode::Message { draft } => {
+                        !message::unique_task_target(&self.loaded.doc, &draft.target)
+                    }
+                    _ => false,
+                };
+                if stale_message {
+                    self.mode = Mode::Normal;
+                    self.flash = Some((
+                        "message cancelled: target is no longer unique in this run".into(),
+                        12,
+                    ));
+                }
                 // view state that names rows survives only as long as the
                 // rows do
                 self.zoom.retain(|k| model::key_exists(&self.loaded.doc, k));
@@ -1060,7 +921,6 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         banner: Some(format!("waiting for run file — {e}")),
         generated_min: None,
         chip: None,
-        action_findings: Vec::new(),
         message_starters: message::defaults(),
         message_config_path: message::config_path(std::path::Path::new(&args.path)),
         message_summaries: Vec::new(),
@@ -1079,7 +939,6 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         scroll: 0,
         herdr: herdr::Link::start(),
         mode: Mode::Normal,
-        gate_seen: false,
         bg_rx: None,
         hits: Vec::new(),
         view_start: 0,
@@ -1146,19 +1005,6 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                     app.sel = None;
                     // modal keys first: while typing, 'q' is a letter
                     match std::mem::replace(&mut app.mode, Mode::Normal) {
-                        m @ (Mode::Input { .. } | Mode::Confirm { .. }) => {
-                            let armed = match &m {
-                                Mode::Confirm { since, .. } => since.elapsed() >= CONFIRM_ARM,
-                                _ => false,
-                            };
-                            match modal_step(m, k.code, k.modifiers, armed, app.gate_seen) {
-                                ModalStep::Stay(m) => app.mode = m,
-                                ModalStep::Cancel(msg) => app.flash = Some((msg.into(), 6)),
-                                ModalStep::ToConfirm(p) => app.enter_confirm(p),
-                                ModalStep::Execute(p) => app.execute(p),
-                            }
-                            continue;
-                        }
                         Mode::Picker(st) => {
                             app.picker_key(st, k);
                             continue;
@@ -1188,8 +1034,8 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                                 return Ok(());
                             }
                         }
-                        // half-page jumps outrank the action keys: ctrl-u
-                        // must page, not open the unblock prompt
+                        // In normal mode ctrl-u pages; the composer handles
+                        // the same chord earlier as clear-line.
                         Char('d') if ctrl => app.move_sel((app.view_rows / 2).max(1) as i64),
                         Char('u') if ctrl => app.move_sel(-((app.view_rows / 2).max(1) as i64)),
                         Char('j') | Down => app.move_sel(1),
@@ -1236,7 +1082,6 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         }
                         Char('?') => app.help = !app.help,
                         Char('m') => app.start_message(),
-                        Char(c @ ('u' | 'a' | 'o' | 'x')) => app.start_action(c),
                         _ => {}
                     }
                 }
@@ -1253,27 +1098,19 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                             .collect::<String>()
                     };
                     let clean = clean();
-                    match &mut app.mode {
-                        Mode::Input { buf, .. } => buf.push_str(&clean),
-                        Mode::Message { draft } => {
-                            let remaining = message::MESSAGE_LIMIT.saturating_sub(draft.text.len());
-                            let end = clean
-                                .char_indices()
-                                .map(|(i, _)| i)
-                                .take_while(|&i| i <= remaining)
-                                .last()
-                                .unwrap_or(0);
-                            let end = if clean.len() <= remaining {
-                                clean.len()
-                            } else {
-                                end
-                            };
-                            draft.text.push_str(&clean[..end]);
-                            if end < clean.len() {
-                                app.flash = Some(("message paste truncated at 32 KiB".into(), 8));
-                            }
+                    if let Mode::Message { draft } = &mut app.mode {
+                        let remaining = message::MESSAGE_LIMIT.saturating_sub(draft.text.len());
+                        let end = clean
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .take_while(|&i| i <= remaining)
+                            .last()
+                            .unwrap_or(0);
+                        let end = if clean.len() <= remaining { clean.len() } else { end };
+                        draft.text.push_str(&clean[..end]);
+                        if end < clean.len() {
+                            app.flash = Some(("message paste truncated at 32 KiB".into(), 8));
                         }
-                        _ => {}
                     }
                 }
                 event::Event::Mouse(m) => {
@@ -1281,10 +1118,8 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                     let (col, row) = (m.column as usize, m.row as usize);
                     let normal = matches!(app.mode, Mode::Normal);
                     match m.kind {
-                        // press → drag → release IS the selection, and it
-                        // runs in every mode: copying the argv out of a
-                        // confirm gate is reading, not answering. What the
-                        // mouse still cannot do in a modal is act.
+                        // press → drag → release IS the selection in every
+                        // mode. The mouse cannot submit the composer.
                         MouseEventKind::Down(MouseButton::Left) => {
                             app.sel = (row < app.view_rows)
                                 .then(|| select::Sel::new(app.view_start + row, col));
@@ -1396,10 +1231,8 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
 }
 
 /// Viewport start for a frame. Normal mode scrolls the minimum needed
-/// to keep the selected row on screen; while a modal gate is open the
-/// frame TAIL is pinned instead — the prompt lives there, and a confirm
-/// gate rendered below the fold reads as a hung pane while `y` still
-/// executes.
+/// to keep the selected row on screen; while the composer is open the
+/// frame tail is pinned so its complete prompt stays visible.
 fn viewport_start(
     frame_len: usize,
     visible: usize,
@@ -1423,13 +1256,10 @@ fn viewport_start(
 
 fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     let (w, h) = terminal::size().map_err(|e| e.to_string())?;
-    let (w, h) = (w as usize, h as usize);
-    // only the ACTION modals pin the frame tail (the confirm gate lives
-    // there); the picker draws its own frame and search follows the cursor
-    let modal = matches!(
-        app.mode,
-        Mode::Input { .. } | Mode::Confirm { .. } | Mode::Message { .. }
-    );
+    let (w, h) = ((w as usize).min(crate::scale::MAX_FRAME_WIDTH), h as usize);
+    // The composer pins its complete prompt block; picker and search have
+    // their own layouts.
+    let modal = matches!(app.mode, Mode::Message { .. });
     let (lines, sel_line, prompt_line) = if app.help {
         app.hits = Vec::new();
         (render::help_lines(), None, None)
@@ -1473,11 +1303,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
         // survives the modal and is restored on cancel
         app.scroll = start;
     }
-    // the gate counts as SHOWN only if the whole prompt block (its first
-    // line through the frame tail) is inside the viewport right now;
-    // `y` stays inert until a draw proved that
-    app.gate_seen =
-        modal && prompt_line.is_some_and(|p| p >= start && lines.len() <= start + visible);
+    let _ = prompt_line;
     app.frame = lines;
     // Paint into ONE buffer and write it in ONE syscall. The old path
     // flushed a full-screen Clear on its own and then flushed again per
@@ -1549,50 +1375,18 @@ mod tests {
     use super::*;
     use event::{KeyCode, KeyModifiers};
 
-    fn pending_reject() -> action::Pending {
-        let doc: Doc = serde_json::from_str(
-            r#"{"run": {"id": "r"}, "generated_at": "2026-01-01T10:00:00Z",
-                "actions": {"reject": {"argv": ["prod", "reject", "{task}", "--reason", "{text}", "--key", "{key}"]}}}"#,
-        )
-        .unwrap();
-        action::build(&doc, "reject", "T1", "T1·a1").unwrap()
-    }
-
-    fn confirm(p: action::Pending) -> Mode {
-        Mode::Confirm { pending: p, since: std::time::Instant::now() }
-    }
-
-    fn input(buf: &str) -> Mode {
-        Mode::Input { pending: pending_reject(), buf: buf.into() }
-    }
-
-    fn step_stay(m: Mode, code: KeyCode, mods: KeyModifiers) -> Mode {
-        match modal_step(m, code, mods, false, false) {
-            ModalStep::Stay(m) => m,
-            _ => panic!("expected Stay"),
-        }
-    }
-
-    fn buf_of(m: &Mode) -> &str {
-        match m {
-            Mode::Input { buf, .. } => buf,
-            _ => panic!("expected Input"),
-        }
-    }
-
     fn message_test_app() -> App {
         let starters = message::defaults();
         App {
             path: "run.json".into(),
             loaded: Loaded {
                 doc: serde_json::from_str(
-                    r#"{"dagr":2,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"tasks":[]}"#,
+                    r#"{"dagr":3,"run":{"id":"r","orchestrator":{"pane":"wX:p1"}},"tasks":[]}"#,
                 )
                 .unwrap(),
                 banner: None,
                 generated_min: None,
                 chip: None,
-                action_findings: Vec::new(),
                 message_starters: starters,
                 message_config_path: "actions.json".into(),
                 message_summaries: Vec::new(),
@@ -1604,7 +1398,6 @@ mod tests {
             scroll: 0,
             herdr: None,
             mode: Mode::Normal,
-            gate_seen: false,
             bg_rx: None,
             hits: Vec::new(),
             view_start: 0,
@@ -1618,6 +1411,68 @@ mod tests {
             search_matches: 0,
             last_click: None,
         }
+    }
+
+    #[test]
+    fn keyboard_navigation_treats_projects_as_real_inert_nodes() {
+        let mut app = message_test_app();
+        app.loaded.doc = serde_json::from_value(serde_json::json!({
+            "dagr": 3,
+            "run": {"id": "projects"},
+            "projects": [
+                {"id": "ROOT", "title": "Recovery"},
+                {"id": "CORE", "title": "Core", "parent": "ROOT"}
+            ],
+            "tasks": [
+                {"id": "PLAN", "title": "plan", "kind": "plan", "project": "CORE",
+                 "state": "done", "deps": [], "attempts": []},
+                {"id": "DEV", "title": "dev", "kind": "impl", "project": "CORE",
+                 "state": "queued", "deps": ["PLAN"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            app.selectable_keys(),
+            ["project:ROOT", "project:CORE", "PLAN", "DEV"]
+        );
+        app.open_or_zoom("project:ROOT".into());
+        assert_eq!(app.zoom, ["project:ROOT"]);
+        app.selected = Some("project:ROOT".into());
+        app.fold_or_up();
+        assert!(app.zoom.is_empty(), "left at the zoom root zooms out first");
+        app.fold_or_up();
+        assert!(app.folded.contains("project:ROOT"));
+        app.open_or_zoom("project:ROOT".into());
+        assert!(!app.folded.contains("project:ROOT"));
+
+        app.selected = Some("DEV".into());
+        app.fold_or_up();
+        assert_eq!(app.selected.as_deref(), Some("PLAN"));
+        app.selected = Some("project:CORE".into());
+        assert!(app.task_target().is_none(), "project rows cannot receive task messages");
+
+        app.loaded.doc = serde_json::from_value(serde_json::json!({
+            "tasks": [
+                {"id": "DUP", "attempts": []},
+                {"id": "DUP", "attempts": []}
+            ]
+        }))
+        .unwrap();
+        app.selected = Some("DUP".into());
+        assert!(app.task_target().is_none(), "ambiguous ids fail closed");
+
+        app.loaded.doc = serde_json::from_value(serde_json::json!({
+            "tasks": [
+                {"id": "A", "attempts": [{"id": "ATT", "n": 1}]},
+                {"id": "B", "attempts": [{"id": "ATT", "n": 1}]}
+            ]
+        }))
+        .unwrap();
+        app.selected = Some("ATT".into());
+        assert!(app.task_target().is_none(), "ambiguous attempt ids fail closed");
+        app.selected = Some("A".into());
+        assert!(app.task_target().is_none(), "messages cannot inherit an ambiguous attempt");
     }
 
     #[test]
@@ -1663,87 +1518,56 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
     }
 
-    // ── F1: the viewport must never draw a gate below the fold ──────
+    #[test]
+    fn reload_cancels_a_message_when_its_unique_target_becomes_duplicate() {
+        let dir = std::env::temp_dir().join(format!(
+            "dagr-message-reload-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.json");
+        let unique = r#"{
+            "dagr":3,
+            "run":{"id":"r","orchestrator":{"pane":"wX:p1"}},
+            "generated_at":"2026-08-20T01:02:03Z",
+            "tasks":[{"id":"A","state":"queued","deps":[],"attempts":[]}]
+        }"#;
+        let duplicate = r#"{
+            "dagr":3,
+            "run":{"id":"r","orchestrator":{"pane":"wX:p1"}},
+            "generated_at":"2026-08-20T01:02:04Z",
+            "tasks":[
+                {"id":"A","state":"queued","deps":[],"attempts":[]},
+                {"id":"A","state":"queued","deps":[],"attempts":[]}
+            ]
+        }"#;
+        std::fs::write(&path, unique).unwrap();
+
+        let mut app = message_test_app();
+        app.path = path.to_string_lossy().into_owned();
+        app.loaded = load(&app.path).unwrap();
+        app.selected = Some("A".into());
+        app.start_message();
+        assert!(matches!(app.mode, Mode::Message { .. }));
+
+        std::fs::write(&path, duplicate).unwrap();
+        app.reload();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(
+            app.flash.as_ref().is_some_and(|(text, _)| text.contains("target is no longer unique")),
+            "reload should explain why the draft was cancelled: {:?}",
+            app.flash
+        );
+        assert!(!message::journal_path(&path).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
-    fn viewport_pins_the_frame_tail_while_a_gate_is_open() {
-        // the review's repro numbers: 32-line frame, selection at 3
+    fn viewport_pins_the_complete_composer() {
         assert_eq!(viewport_start(32, 23, Some(3), 0, false), 0, "normal: follow selection");
-        assert_eq!(viewport_start(32, 23, Some(3), 0, true), 9, "modal: tail on screen");
+        assert_eq!(viewport_start(32, 23, Some(3), 0, true), 9, "composer: tail on screen");
         assert_eq!(viewport_start(10, 23, Some(3), 0, true), 0, "short frame: all visible");
         assert_eq!(viewport_start(32, 23, Some(30), 0, false), 8, "normal: follow a deep selection");
-    }
-
-    // ── F3: `y` answers the gate, not the keyboard buffer ────────────
-
-    #[test]
-    fn confirm_y_is_inert_until_the_gate_was_drawn_and_armed() {
-        for (armed, seen) in [(false, false), (true, false), (false, true)] {
-            let s = modal_step(
-                confirm(pending_reject()),
-                KeyCode::Char('y'),
-                KeyModifiers::NONE,
-                armed,
-                seen,
-            );
-            assert!(
-                matches!(s, ModalStep::Stay(Mode::Confirm { .. })),
-                "armed={armed} seen={seen}: y must not execute"
-            );
-        }
-        let s =
-            modal_step(confirm(pending_reject()), KeyCode::Char('y'), KeyModifiers::NONE, true, true);
-        assert!(matches!(s, ModalStep::Execute(_)));
-    }
-
-    #[test]
-    fn confirm_runs_on_plain_y_only() {
-        for (code, mods) in [
-            (KeyCode::Enter, KeyModifiers::NONE), // the undisclosed-Enter path
-            (KeyCode::Char('Y'), KeyModifiers::SHIFT),
-            (KeyCode::Char('j'), KeyModifiers::NONE),
-            (KeyCode::Char('y'), KeyModifiers::CONTROL),
-        ] {
-            let s = modal_step(confirm(pending_reject()), code, mods, true, true);
-            assert!(matches!(s, ModalStep::Stay(Mode::Confirm { .. })), "{code:?} must be inert");
-        }
-        for (code, mods) in [
-            (KeyCode::Esc, KeyModifiers::NONE),
-            (KeyCode::Char('n'), KeyModifiers::NONE),
-            (KeyCode::Char('c'), KeyModifiers::CONTROL),
-        ] {
-            let s = modal_step(confirm(pending_reject()), code, mods, true, true);
-            assert!(matches!(s, ModalStep::Cancel(_)), "{code:?} must cancel");
-        }
-    }
-
-    // ── F15: line editing edits; modifiers never type letters ────────
-
-    #[test]
-    fn input_mode_edits_finalizes_and_cancels() {
-        let m = step_stay(input("error path"), KeyCode::Char('s'), KeyModifiers::NONE);
-        assert_eq!(buf_of(&m), "error paths");
-        let m = step_stay(m, KeyCode::Backspace, KeyModifiers::NONE);
-        assert_eq!(buf_of(&m), "error path");
-        let m = step_stay(m, KeyCode::Char('w'), KeyModifiers::CONTROL);
-        assert_eq!(buf_of(&m), "error ", "ctrl+w deletes a word, not types a w");
-        let m = step_stay(m, KeyCode::Char('u'), KeyModifiers::CONTROL);
-        assert_eq!(buf_of(&m), "", "ctrl+u clears, not types a u");
-
-        match modal_step(input("why"), KeyCode::Enter, KeyModifiers::NONE, false, false) {
-            ModalStep::ToConfirm(p) => {
-                assert!(p.preview().contains("why"), "text is in the finalized argv");
-                assert!(p.preview().contains("dagr-"), "key is finalized");
-            }
-            _ => panic!("Enter must finalize into the confirm gate"),
-        }
-        assert!(matches!(
-            modal_step(input("half-typed"), KeyCode::Esc, KeyModifiers::NONE, false, false),
-            ModalStep::Cancel(_)
-        ));
-        assert!(matches!(
-            modal_step(input("half-typed"), KeyCode::Char('c'), KeyModifiers::CONTROL, false, false),
-            ModalStep::Cancel(_)
-        ));
     }
 }

@@ -21,8 +21,10 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 tmp=""
+stage=""
 cleanup() {
   [ -z "$tmp" ] || rm -rf "$tmp"
+  [ -z "$stage" ] || rm -f "$stage"
 }
 trap cleanup EXIT
 
@@ -99,6 +101,11 @@ case "$expected" in
     exit 1
     ;;
 esac
+[ "${#expected}" -eq 64 ] || {
+  echo "$name: malformed checksum asset $checksum" >&2
+  exit 1
+}
+expected="$(printf '%s' "$expected" | tr 'A-F' 'a-f')"
 if command -v sha256sum >/dev/null 2>&1; then
   actual="$(sha256sum "$tmp/$archive" | awk '{print $1}')"
 elif command -v shasum >/dev/null 2>&1; then
@@ -118,5 +125,8 @@ if [ ! -f "$tmp/unpack/$name" ]; then
   echo "$name: release archive does not contain $name" >&2
   exit 1
 fi
-install -m 0755 "$tmp/unpack/$name" "$bin_dir/$name"
+stage="$(mktemp "$bin_dir/.dagr-install.XXXXXX")"
+install -m 0755 "$tmp/unpack/$name" "$stage"
+mv -f "$stage" "$bin_dir/$name"
+stage=""
 echo "$name: installed $bin_dir/$name"

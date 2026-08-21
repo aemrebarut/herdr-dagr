@@ -515,9 +515,16 @@ fn prompt_cli_args<'a>(target: &'a str, text: &'a str) -> [&'a str; 4] {
     ["agent", "prompt", target, text]
 }
 
-#[cfg(not(unix))]
-pub fn prompt(target: &str, text: &str) -> Result<(), String> {
-    let output = std::process::Command::new("herdr")
+#[cfg(any(not(unix), test))]
+fn select_prompt_cli_bin(configured: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    configured
+        .filter(|bin| !bin.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("herdr"))
+}
+
+#[cfg(any(not(unix), test))]
+fn prompt_cli_at(bin: &std::ffi::OsStr, target: &str, text: &str) -> Result<(), String> {
+    let output = std::process::Command::new(bin)
         .args(prompt_cli_args(target, text))
         .output()
         .map_err(|e| format!("cannot launch herdr: {e}"))?;
@@ -527,6 +534,12 @@ pub fn prompt(target: &str, text: &str) -> Result<(), String> {
         let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
         Err(if detail.is_empty() { "herdr prompt failed".into() } else { detail })
     }
+}
+
+#[cfg(not(unix))]
+pub fn prompt(target: &str, text: &str) -> Result<(), String> {
+    let bin = select_prompt_cli_bin(std::env::var_os("HERDR_BIN_PATH"));
+    prompt_cli_at(&bin, target, text)
 }
 
 // ── tests: envelope fixtures from a live protocol-19 daemon ─────────
@@ -700,11 +713,44 @@ mod tests {
     }
 
     #[test]
-    fn windows_prompt_cli_uses_the_documented_positional_shape() {
+    fn cli_prompt_uses_the_authoritative_binary_and_positional_transport() {
+        use std::os::unix::fs::PermissionsExt;
+
         assert_eq!(
             prompt_cli_args("wX:p1", "hello world"),
             ["agent", "prompt", "wX:p1", "hello world"]
         );
+        assert_eq!(select_prompt_cli_bin(None), std::ffi::OsString::from("herdr"));
+        assert_eq!(
+            select_prompt_cli_bin(Some(std::ffi::OsString::new())),
+            std::ffi::OsString::from("herdr")
+        );
+
+        let dir = std::env::temp_dir().join(format!(
+            "dagr-herdr-bin-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("fake herdr");
+        let log = dir.join("args");
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{}\"\n", log.display()),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&bin).unwrap().permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&bin, permissions).unwrap();
+
+        let selected = select_prompt_cli_bin(Some(bin.clone().into_os_string()));
+        assert_eq!(selected, bin.as_os_str());
+        prompt_cli_at(&selected, "wX:p1", "hello world").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().collect::<Vec<_>>(),
+            ["agent", "prompt", "wX:p1", "hello world"]
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Full session against a fake daemon: ack gate, replay discard,

@@ -1,5 +1,5 @@
 {
-  "dagr": 1,
+  "dagr": 3,
   "run": {"id": "run-example-v01", "title": "example: first attempt", "started_at": "2026-03-01T09:00:00Z"},
   "generated_at": "2026-03-01T09:05:00Z",
   "tasks": [

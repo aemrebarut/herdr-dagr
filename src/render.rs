@@ -61,7 +61,11 @@ fn join_candidates(join: &GateJoin) -> [Vec<Seg>; 3] {
         "done",
         "working",
         "review",
+        "needs_answer",
         "blocked",
+        "ready",
+        "waiting",
+        "unassigned",
         "queued",
         "failed",
         "rejected",
@@ -177,7 +181,7 @@ fn head_min_width(row: &Row, name_prefix: usize) -> usize {
 /// Recursive projects are visual containers, not fake tasks. One quiet
 /// heading and a hairline communicate scope without adding another tree
 /// node or competing with the task-state glyph grammar.
-fn project_line(row: &Row, w: usize) -> String {
+fn project_line(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     let mut l = Line::new(w);
     let status_w = seg_width(&row.status).min(30);
     let min_head = 2 + row.name.width().min(8); // ▾ + gap + useful id
@@ -186,7 +190,8 @@ fn project_line(row: &Row, w: usize) -> String {
     let max_rail = status_x.saturating_sub(2).saturating_sub(min_head);
     let rail = fit_rail(&row.rail, max_rail);
     let mut x = l.put(1, &rail, Style::fg(style::EDGE));
-    x = l.put(x, "▾ ", Style::bold(row.glyph_color));
+    let fold_x = x;
+    x = l.put(x, &format!("{} ", row.glyph), Style::bold(row.glyph_color));
     x = l.put(
         x,
         &trunc(&row.name, status_x.saturating_sub(x)),
@@ -215,7 +220,10 @@ fn project_line(row: &Row, w: usize) -> String {
     if show_status && status_x > x + 1 {
         seg_put(&mut l, status_x, &row.status, w.saturating_sub(1));
     }
-    l.render(None, true)
+    (
+        l.render(if selected { Some(style::SEL_BG) } else { None }, true),
+        row.fold.as_ref().map(|_| (fold_x, fold_x + 1)),
+    )
 }
 
 /// One full-grammar trace row, responsive: model/status/agent columns
@@ -223,7 +231,7 @@ fn project_line(row: &Row, w: usize) -> String {
 /// chip when one was drawn, so a click on it can toggle the fold.
 fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     if row.project {
-        return (project_line(row, w), None);
+        return project_line(row, w, selected);
     }
     let model_x = w.saturating_sub(44);
     let st_x = w.saturating_sub(31);
@@ -288,7 +296,7 @@ fn full_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usiz
 /// Narrow two-column row for the sidecar's left panel.
 fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     if row.project {
-        return (project_line(row, w), None);
+        return project_line(row, w, selected);
     }
     // Size the right-aligned status before the join/head. Both are primary
     // signals; title/model text uses only the space that remains.
@@ -419,25 +427,34 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
 // ── focus card ──────────────────────────────────────────────────────
 
 fn find_selection<'a>(doc: &'a Doc, key: &str) -> Option<(&'a Task, Option<&'a Attempt>)> {
+    if !crate::contract::valid_identity(key) {
+        return None;
+    }
+    if doc
+        .projects
+        .iter()
+        .any(|project| project.id.as_deref().is_some_and(|id| format!("project:{id}") == key))
+    {
+        return None;
+    }
     let tasks = doc.tasks.as_deref()?;
+    let mut found = Vec::new();
     for t in tasks {
         for a in &t.attempts {
             if a.id.as_deref() == Some(key) {
-                return Some((t, Some(a)));
+                found.push((t, Some(a)));
             }
         }
-    }
-    tasks
-        .iter()
-        .find(|t| t.id.as_deref() == Some(key))
-        .map(|t| {
-            let last = if crate::model::needs_queued_stub(t) {
+        if t.id.as_deref() == Some(key) {
+            let current = if super::model::needs_current_stub(t) {
                 None
             } else {
                 t.attempts.iter().max_by_key(|a| a.n.unwrap_or(0))
             };
-            (t, last)
-        })
+            found.push((t, current));
+        }
+    }
+    (found.len() == 1).then(|| found[0])
 }
 
 pub fn focus_card(
@@ -451,30 +468,47 @@ pub fn focus_card(
     if cw < 8 {
         return vec![paint("…", Style::dim(style::MUTED))];
     }
+    if let Some(id) = key.strip_prefix("project:") {
+        let mut projects = doc.projects.iter().filter(|project| {
+            project.id.as_deref() == Some(id) && crate::contract::valid_identity(id)
+        });
+        let node_collision = doc.tasks.as_deref().unwrap_or(&[]).iter().any(|task| {
+            task.id.as_deref() == Some(key)
+                || task.attempts.iter().any(|attempt| attempt.id.as_deref() == Some(key))
+        });
+        if let (Some(project), None, false) = (projects.next(), projects.next(), node_collision) {
+            let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
+            let col = style::state_color(&state);
+            let label = trunc(&format!("─ project {id} "), cw.saturating_sub(2));
+            let mut lines = vec![paint(
+                &format!("┌{label}{}┐", "─".repeat(cw.saturating_sub(2 + label.width()))),
+                Style::bold(col),
+            )];
+            for (text, text_style) in [
+                (project.title.as_deref(), Style::fg(style::TEXT)),
+                (project.owner.as_deref(), Style::dim(style::MUTED)),
+                (project.note.as_deref(), Style::dim(style::MUTED)),
+            ] {
+                if let Some(text) = text.filter(|text| !text.is_empty()) {
+                    let mut line = Line::new(cw);
+                    line.put(0, "│ ", Style::fg(col));
+                    line.put(2, &trunc(text, cw.saturating_sub(4)), text_style);
+                    line.put(cw.saturating_sub(2), " │", Style::fg(col));
+                    lines.push(line.render(None, true));
+                }
+            }
+            lines.push(paint(
+                &format!("└{}┘", "─".repeat(cw.saturating_sub(2))),
+                Style::fg(col),
+            ));
+            return lines;
+        }
+    }
     let Some((task, attempt)) = find_selection(doc, key) else {
         return vec![paint("  (nothing selected)", Style::dim(style::MUTED))];
     };
-    let attempt_state = attempt
-        .and_then(|a| a.state.as_deref())
-        .or(task.state.as_deref())
-        .unwrap_or("queued");
-    let current_row = attempt.is_none_or(|selected| {
-        task.attempts
-            .iter()
-            .max_by_key(|a| a.n.unwrap_or(0))
-            .is_none_or(|latest| std::ptr::eq(latest, selected))
-    });
-    let state = if task.state.as_deref() == Some("canceled") && current_row {
-        "canceled"
-    } else if matches!(attempt_state, "working" | "queued") {
-        task.state
-            .as_deref()
-            .filter(|state| matches!(*state, "blocked" | "review"))
-            .unwrap_or(attempt_state)
-    } else {
-        attempt_state
-    };
-    let col = style::state_color(state);
+    let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "invalid".into());
+    let col = style::state_color(&state);
     let inner = cw.saturating_sub(4);
     let now = doc.generated_at.as_deref().and_then(parse_min);
     let mut body: Vec<(String, Style)> = Vec::new();
@@ -693,9 +727,10 @@ pub fn focus_card(
             .collect::<String>();
         body.push((
             format!(
-                "↗ {} · {} · {} · {}",
+                "↗ {} · {} · {} · {} · {}",
                 message.id,
                 status,
+                message.starter,
                 message.authority.label(),
                 text
             ),
@@ -774,7 +809,7 @@ pub struct FrameInput<'a> {
     pub watching: bool,
     /// herdr liveness hints (M2); `None` outside herdr or in snapshots.
     pub herdr: Option<&'a crate::herdr::Hints>,
-    /// Modal action prompt (M4): the text-input / confirm-gate line.
+    /// Contextual message-composer prompt.
     pub prompt: Option<String>,
     /// Append-only operator-message state reconstructed once per reload.
     pub messages: &'a [crate::message::Summary],
@@ -1050,7 +1085,6 @@ pub fn help_lines() -> Vec<String> {
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("m", "message the orchestrator · Tab picks a starter · text stays editable"),
         ("ctrl-t in message", "toggle explicit authority: return to me ↔ may decide + continue"),
-        ("u / a / o / x", "legacy producer CLI actions, when declared · confirm-gated"),
         ("f", "open another run file (type to filter · recent files first)"),
         ("/", "find a row by id, title, or agent · n/N cycle the matches"),
         ("y", "copy the selected row id to the clipboard"),
@@ -1066,7 +1100,7 @@ pub fn help_lines() -> Vec<String> {
     }
     out.push(String::new());
     out.push(paint(
-        " grammar: ● done ◎ working ◈ review/question ■ blocked ○ queued ✗ failed × canceled ⋈ join ↩ re-entry ⟲ loop-stub » forward-ref",
+        " grammar: ● done ◎ working/join ◈ review/question ■ blocked ○ queued ✗ failed × canceled ↩ re-entry ⟲ loop-stub » forward-ref",
         Style::dim(style::MUTED),
     ));
     out.push(paint(
@@ -1173,8 +1207,36 @@ mod tests {
         }))
         .unwrap();
         let card = focus_card(&doc, "R", 48, None, &[]).join("\n");
-        assert!(card.contains("R · QUEUED"), "{card}");
+        assert!(card.contains("R · READY"), "{card}");
         assert!(!card.contains("attempt 1 · FAILED"), "{card}");
+    }
+
+    #[test]
+    fn focus_cards_share_derived_signals_and_projects_have_no_task_action() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "focus"},
+            "projects": [{"id": "P", "title": "Core", "owner": "lead"}],
+            "tasks": [
+                {"id": "D", "title": "done", "kind": "impl", "project": "P",
+                 "state": "done", "deps": [], "attempts": []},
+                {"id": "R", "title": "ready", "kind": "impl", "project": "P",
+                 "owner": "dev", "state": "queued", "deps": ["D"], "attempts": []},
+                {"id": "W", "title": "waiting", "kind": "impl", "project": "P",
+                 "owner": "dev", "state": "queued", "deps": ["R"], "attempts": []},
+                {"id": "Q", "title": "question", "kind": "question", "project": "P",
+                 "owner": "operator", "state": "queued", "deps": ["D"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        for (key, signal) in [("R", "READY"), ("W", "WAITING"), ("Q", "NEEDS_ANSWER")] {
+            let card = focus_card(&doc, key, 48, None, &[]).join("\n");
+            assert!(card.contains(signal), "{key}: {card}");
+        }
+        let project = focus_card(&doc, "project:P", 48, None, &[]).join("\n");
+        assert!(project.contains("project P") && project.contains("Core"), "{project}");
+        assert!(!project.contains("[m] message"), "projects are not task action targets: {project}");
     }
 
     #[test]

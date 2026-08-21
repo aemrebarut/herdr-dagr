@@ -73,8 +73,3 @@ fn every_sample_is_strict_clean() {
 fn the_selfrun_acceptance_demo_is_strict_clean() {
     assert_dir_strict_clean("demos/selfrun", 1);
 }
-
-#[test]
-fn the_actions_demo_fixture_is_strict_clean() {
-    assert_dir_strict_clean("demos/actions", 1);
-}

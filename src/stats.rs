@@ -310,10 +310,10 @@ pub fn run(args: &[String]) -> ExitCode {
         eprintln!("dagr stats: usage: dagr stats <run.json> [--json]");
         return ExitCode::from(2);
     };
-    let raw = match std::fs::read_to_string(path) {
+    let raw = match crate::scale::read_limited(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("dagr stats: cannot read {path}: {e}");
+            eprintln!("dagr stats: {e}");
             return ExitCode::from(2);
         }
     };
@@ -324,6 +324,10 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    if let Err(e) = crate::scale::enforce_document(&doc) {
+        eprintln!("dagr stats: {e}");
+        return ExitCode::from(1);
+    }
     let f = compute(&doc);
 
     if json_out {

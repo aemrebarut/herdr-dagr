@@ -68,6 +68,13 @@ jobs:
           $version = (& (Join-Path $install 'dagr.exe') --version | Out-String).Trim()
           $packageVersion = (Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"([^"]+)"' |
             Select-Object -First 1).Matches[0].Groups[1].Value
-          if ($version -ne "dagr $packageVersion (contract v2; reads v1)") {
+          if ($version -ne "dagr $packageVersion (contract v3; reads v1/v2)") {
             throw "unexpected installed version: $version"
           }
+
+  unix-delivery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/test-release-install.sh
+      - run: scripts/test-public-stage.sh

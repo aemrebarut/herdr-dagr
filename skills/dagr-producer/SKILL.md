@@ -10,7 +10,7 @@ renders live. dagr is a *representation kernel*: you assert task truth, and
 it derives only defined view signals from those facts. Missing or wrong facts
 still produce a missing or wrong graph; there is no workflow engine to repair it.
 
-Contract version: **`"dagr": 2`** (v1 files remain readable; write v2 for new runs).
+Contract version: **`"dagr": 3`** (v1/v2 files remain readable; write v3 for new runs).
 
 ## Find your validator (before you write anything)
 
@@ -106,6 +106,8 @@ workflow gets its own run file and its own pane.
 3. **The run is a DAG**: no cycles through `deps` or gate
    `inputs`. A gate's fan-in IS its `deps`; `inputs` exists only to
    override when the fan-in set differs from the dependency set.
+   Encode true sequential work as dependencies; task declaration order is
+   only the attempt-less sibling tiebreak.
 4. **Terminal attempts carry `outcome`** with `result` == `state`
    and a real evidence tier; timestamps are real ISO-8601
    and attempts end after they start.
@@ -142,7 +144,7 @@ locator + liveness) that `dagr check` will hold you to.
 
 ```json
 {
-  "dagr": 2,
+  "dagr": 3,
   "run": {
     "id": "run-myjob-v01", "title": "what this run is",
     "started_at": "2026-02-01T09:00:00Z",
@@ -410,6 +412,7 @@ message_id: msg-0123456789abcdef
 run: run-myjob-v01
 revision: 2026-02-01T09:42:00Z
 target: G1
+starter: get-guidance
 authority: recommend_and_return
 
 Ask sol5.6·max and fable·xhigh independently, then combine their opinions.
@@ -423,10 +426,8 @@ Do this:
    `recommend_and_return` means do the analysis and return the choice;
    `may_decide_and_continue` lets you decide and proceed. Never infer the
    second from wording such as “best guess”.
-3. Use your normal orchestration tools. If the user asks for several agents,
-   models, efforts, independent opinions, or synthesis, spawn/queue those
-   through Herdr and combine them. If they snooze, use your normal monitor,
-   background process, or cron approach. dagr runs none of this.
+3. Treat model, reasoning, and multi-agent requests as ordinary editable
+   instructions and use your normal orchestration tools. dagr runs none of it.
 4. Keep the `message_id` through follow-ups. On resolution, append an event:
 
 ```json
@@ -466,9 +467,7 @@ nine starters are shown, labels are capped at 80 bytes, and prompts at 32 KiB.
 The pane reloads this file automatically and shows a banner for invalid or
 unsupported configuration.
 
-The old top-level run `actions` argv templates remain supported for v1
-producers, but do not add them to new workflows unless the user explicitly
-needs a direct legacy CLI mutation path.
+Old top-level run `actions` values are readable but inert. Do not add them.
 
 ### Lose a runtime
 
@@ -493,7 +492,7 @@ the record.
 
 ## Field reference
 
-The full schema is `CONTRACT.md` (Schema v2 section) in the dagr repo;
+The full schema is `CONTRACT.md` (Schema v3 section) in the dagr repo;
 findings codes are listed there too. When `dagr check --json` names a code
 you don't recognize, read its message — every finding carries the JSON
 path of the offending field.

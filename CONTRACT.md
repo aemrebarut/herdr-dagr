@@ -1,11 +1,13 @@
-# The dagr run-state contract — v2
+# The dagr run-state contract — v3
 
-> **Status: v2 (2026-08-18), with v1 read compatibility.** The v1 object
-> model (§§1–8) remains valid; v2 adds recursive projects, scope-correct gate
-> placement, an orchestrator locator, and correlated operator messages. It is the union
+> **Status: v3 (2026-08-20), with v1/v2 read compatibility.** The v1 object
+> model (§§1–8) remains valid; v2 added recursive projects, scope-correct gate
+> placement, an orchestrator locator, and correlated operator messages. v3
+> makes that message composer the only user-facing action and keeps old
+> producer argv declarations inert. It is the union
 > of the requirements produced by a field survey of existing orchestration
 > surfaces and by first-hand study of real multi-agent sessions, and each
-> item cites why it exists; the field-level encoding is the Schema v2
+> item cites why it exists; the field-level encoding is the Schema v3
 > section below, enforced by `dagr check` and exercised by
 > [`samples/run.json`](samples/run.json)
 > — which encodes the full reference scene (executed loop,
@@ -19,7 +21,7 @@
 
 `dagr` is a **representation kernel, not an enforcement kernel**. It carries
 no fencing, no CAS, no capabilities, and no scheduler/action engine. The producer (a file
-written by hand, an orchestrator, eventually a ledger daemon) owns authority
+written by hand or an orchestrator) owns authority
 and settlement. The contract's job is to make the true shape of the run
 *expressible* — the two gaps found across every orchestration surface
 studied (no task/attempt split, no dependency promotion) are
@@ -116,14 +118,16 @@ attempt is blocked first.
   `unassigned` without an owner/actor, or `needs answer` when its kind is
   `question`. A canceled dependency remains unmet; cancel or redirect its
   dependents rather than treating withdrawal as success.
+- **True sequential work uses `deps`.** For attempt-less siblings with the
+  same dependency position, task declaration order is the display tiebreak.
 - **Fan-in sets are first-class**: a gate's `inputs` carry per-input live
-  state so the gate row can render `●◎●→⋈ G2` and name its blocker
+  state so the gate row can render `●◎●→◎ G2` and name its blocker
   (`waits L5`).
 - **Gates are milestones, not lane children.** A gate with `project` is drawn
   at that project. Without one, its scope is the nearest project shared by
   all inputs; inputs from unrelated top-level projects place it at the run
   root. An input's attempt history never changes this placement. The gate
-  row is a boundary with a state-bearing `N→1 ⋈` join; selecting it reveals
+  row is a boundary with a state-bearing `N→1 ◎` join; selecting it reveals
   exact inputs. A retry may follow an earlier attempt of the same gate, but
   a gate never inherits ownership from whichever input ran last.
 - **Promotion is an event, not an inference**: the producer emits a
@@ -158,7 +162,7 @@ projection) are **never** success evidence.
   optional `after` chaining onto a sibling future node of the *same*
   policy, `loop_back` for return-to-sender stubs, `source` naming the rule
   that authored it) · `rounds_max` (declared round budget) · `gate_cmd`
-  (argv the gate runs; surfacing it is a v2 item).
+  (opaque producer metadata; dagr never executes it).
 - The renderer draws **dotted futures** (`├┄ ╰┄`, `⟲` loop-back stubs, `○`
   node stubs) *only* from declared policy. Stubs are earned only by
   working/blocked nodes — a queued or settled node shows no speculation.
@@ -202,8 +206,9 @@ only editable text plus a default authority. `Tab` changes starter and
 - `decide` / “may decide + continue”: the orchestrator may choose and proceed
   within the run's existing scope. It grants no broader authority.
 
-The operator can freely add model names, thinking levels, independent-review
-instructions, or any other prose. dagr never interprets it. The optional
+The operator can freely add model names, reasoning levels, multi-agent or
+independent-review instructions, or any other prose. dagr never interprets
+it. The optional
 file next to the run, `actions.json`, has this no-code shape:
 
 ```json
@@ -226,14 +231,15 @@ editable prompt at 32 KiB.
 
 The run declares `run.orchestrator {pane, agent}`. On Enter, dagr first
 appends the immutable raw message to adjacent `messages.jsonl`, including
-message id, run/revision, target, authority, text, and destination. Only then
+message id, run, task, document revision, chosen starter, authority, exact
+text, and destination. Only then
 does it call Herdr's native queued-input API (`agent.prompt`). Delivery or
 failure is a second append-only record. A new journal is owner-only (`0600`
 on Unix); it contains operator prose and should be treated as run data, not
 committed casually. Reads are filtered by `run.id`, so sibling run files may
-share the directory without showing each other's messages. There is no dagr polling engine:
-monitor processes, background work, cron, agent selection, synthesis, and
-execution remain the orchestrator's job.
+share the directory without showing each other's messages. Dagr enqueues one
+addressed Herdr message and stops; it has no scheduler, daemon, supervisor,
+cron service, lock service, or arbitrary subprocess execution path.
 
 The orchestrator correlates the eventual result by appending an event with
 `message_id` (or `source_messages[]` when several messages informed it).
@@ -242,68 +248,11 @@ ordinary `directive` events may also carry those correlations. The focus
 card shows recorded/delivered/resolved state and the exact text, so a custom
 instruction does not disappear after submission.
 
-### 10. Legacy CLI actions — producer-declared, confirm-gated
+### 10. Legacy action data — readable and inert
 
-For backward compatibility, an optional top-level `actions` block maps verbs to **argv templates**
-naming the producer's own CLI. This is the only mutating surface the pane
-has. It mutates nothing itself: `dagr` runs the producer's command and
-renders whatever the producer then writes. Documents without the block are
-unaffected (it is additive within v1; validators that predate it ignore
-it — findings for it fire only when it is present).
-
-```json
-"actions": {
-  "unblock": {"argv": ["mylegder-cli", "unblock", "{task}", "--by", "{operator}", "--key", "{key}"]},
-  "answer":  {"argv": ["mylegder-cli", "answer", "{task}", "--text", "{text}", "--key", "{key}"]},
-  "accept":  {"argv": ["mylegder-cli", "accept", "{task}", "--attempt", "{attempt}", "--key", "{key}"]},
-  "reject":  {"argv": ["mylegder-cli", "reject", "{task}", "--attempt", "{attempt}", "--reason", "{text}", "--key", "{key}"]}
-}
-```
-
-- Templates are **argv arrays, never shell strings** (same rule as
-  `gate_cmd`). Placeholders: `{task}` `{attempt}` (selected attempt id)
-  `{operator}` (`$DAGR_OPERATOR` or `$USER`) `{text}` (typed at the
-  confirm prompt) `{key}` (idempotency key). Substituted values are
-  single argv elements filled in one pass — a placeholder-shaped task id
-  or typed text is data, never re-expanded.
-- `{key}` is an identity for the **complete intent**: FNV-1a64 over a
-  length-prefixed encoding of
-  `(run.id, verb, task, attempt, generated_at, operator, text)` —
-  length-prefixed so unrestricted strings cannot collide structurally
-  across field joins, and computed only after `{text}` is typed, so the
-  confirm gate shows the real key and a corrected reason is a *new*
-  intent with a new key. Retrying the same confirmed command (crash,
-  double-press) reuses the same key and the producer applies it once.
-  `generated_at` is the document revision in the tuple; producers that
-  may write twice within its resolution must dedupe on their own
-  revision token instead of relying on the timestamp advancing.
-- Every template **must carry `{key}`** (E192) — an action without a
-  dedupe token turns a nervous double-confirm into a double mutation.
-  `argv[0]` must be a **literal** executable name: nonempty, NUL-free,
-  and placeholder-free (E193) — the executable is pinned by the
-  template, never resolved from run data or the environment at confirm
-  time. A document that declares `actions` must carry `generated_at`
-  (E194): the key hashes the document revision, and without one every
-  repetition of an intent keys identically forever, so a later
-  same-shaped intent would be swallowed as a replay.
-- **Trust boundary**: dagr executes `argv` directly — no shell is ever
-  interposed, so typed text cannot break out of its argv slot. That
-  guarantee ends where the template chooses to reintroduce an
-  interpreter: `["sh", "-c", "… {text} …"]` is validator-clean but makes
-  typed text shell code. Producers must not place placeholders inside
-  interpreter command strings; the validator cannot police what the
-  named executable does with its arguments.
-- The pane binds `u`→`unblock`, `a`→`answer`, `o`→`accept`,
-  `x`→`reject`, each **confirm-gated**: the exact argv (placeholders
-  filled, key included) is shown before anything runs, and only `y`
-  confirms. "Shown" is enforced, not assumed: the viewport pins the
-  prompt on screen while a gate is open, `y` is inert until a draw
-  proved the gate visible and it has been up long enough to be read,
-  keys queued before the gate existed are drained, a paste is text for
-  the text prompt only, and a document reload cancels the open gate
-  rather than carrying the intent across a revision. Result = the
-  producer's next write; `dagr` renders no local state change, ever.
-- The verb set is open; unknown verbs are declared-but-unbound (W211).
+V1/v2 documents may contain a top-level `actions` value. V3 accepts it as
+opaque compatibility data but never validates, binds, expands, or executes
+it. V3 producers omit it and use the §9 composer.
 
 ## Transport
 
@@ -313,12 +262,12 @@ and queued operator messages; it never supplies task truth. Canonical sample:
 [`samples/run.json`](samples/run.json). (Earlier design studies used a
 legacy flat shape that predates this contract; it is not part of v1.)
 
-## Schema v2 — field reference
+## Schema v3 — field reference
 
-Top level: `dagr` (int, `1|2`; producers should write `2`) ·
+Top level: `dagr` (int, `1|2|3`; producers should write `3`) ·
 `run {id*, title, started_at, orchestrator {pane, agent}}` ·
 `generated_at` (staleness anchor) · `projects[]` · `tasks[]*` · `events[]` ·
-`actions {verb → {argv[]*}}` (legacy optional surface, §10).
+`actions` (opaque v1/v2 compatibility data, §10).
 All timestamps ISO-8601. Unknown fields are ignored (forward compat).
 `*` = required.
 
@@ -344,7 +293,7 @@ missing `evidence` renders as `!`) · `progress {done, total, note}` ·
 `liveness {prompt_acknowledged, last_output_at, queued_input}` ·
 `chain_key` (optional chained content identity).
 
-**Policy** — `rounds_max` · `gate_cmd[]` (argv, never a shell string) ·
+**Policy** — `rounds_max` · `gate_cmd[]` (inert producer metadata) ·
 `futures[]`. **Future** — `on* (pass|fail)` · `streak` (default 1) ·
 exactly one of `ref` (existing task id → rendered `»`) or `node {id*,
 title, actor, model, attribution: planned|predicted}` (rendered `○`, or
@@ -358,10 +307,9 @@ directive|message_resolved|note`) · `task`/`attempt` refs · `actor` · directi
 `task`, `message_id`, and `detail`. Append-only,
 ascending time.
 
-**v1 migration:** none required. A v1 document has no named project scopes
-or orchestrator message target. It receives corrected scope-level gate
-placement immediately; add `"dagr": 2`, `run.orchestrator`, projects, and
-task homes only when those features are wanted.
+**v1/v2 migration:** none required for reading. Write `"dagr": 3` for new
+documents. Add `run.orchestrator` to enable messages, and omit legacy
+top-level `actions`; the pane never executes them in any readable version.
 
 ## dagr check — findings
 
@@ -381,14 +329,7 @@ E142 unknown evidence tier · E150 task state contradicts attempt record
 missing/colliding/duplicate future-node ids) · E170/E171 malformed/dangling
 event · E172 event missing per-type required fields (subjects, directive verb/by) · E180 invalid timestamp (full ISO-8601 validation — calendar
 ranges, offsets normalized to UTC; the renderer uses the same parser) ·
-E181 attempt ends before it starts · E190 action template malformed
-(missing/empty argv, non-string element — reported per element at its
-path) · E191 action template uses an unknown placeholder · E192 action
-template carries no `{key}` placeholder (no dedupe token) · E193
-`argv[0]` not a literal executable name (empty, NUL-bearing, or
-placeholder-bearing) · E194 `actions` declared without `generated_at`
-(intent keys need a document revision) — findings for `actions` fire
-only when the block is present.
+E181 attempt ends before it starts.
 
 Warnings (exit 0, or 1 with `--strict`): W100 no `generated_at` · W201
 outcome without evidence tier · W202 gate whose resolved fan-in set
@@ -397,8 +338,15 @@ timestamps · W204 working attempt without locator · W205 blocked without
 unblock owner · W206 n>1 without cause · W207 events out of order · W208
 working attempt with no populated liveness field · W209 settled task
 with an attempt still working (unfenced stale attempt) · W210 `review`
-task with no attempts (reviewing nothing) · W211 action verb declared but
-not bound to any pane key (declared-but-unreachable).
+task with no attempts (reviewing nothing).
+
+## Admission and display bounds
+
+`dagr view`, `check`, and `stats` reject sources over 16 MiB and documents
+over 4,096 combined project/task/attempt/future items or 32,768 events.
+Snapshot width is capped at 4,096 columns. Producer text is retained in the
+parsed document; C0/C1 controls and terminal-active bidi controls are escaped
+visibly only when text crosses the display boundary.
 
 ## Non-goals
 

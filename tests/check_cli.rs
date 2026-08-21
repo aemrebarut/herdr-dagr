@@ -50,7 +50,7 @@ fn version_reports_the_current_contract_and_compatibility() {
         .expect("dagr runs");
     assert!(out.status.success());
     let version = String::from_utf8_lossy(&out.stdout);
-    assert!(version.contains("contract v2; reads v1"), "{version}");
+    assert!(version.contains("dagr 0.3.0 (contract v3; reads v1/v2)"), "{version}");
 }
 
 /// A minimal valid document: one done task, one verified attempt.
@@ -159,6 +159,28 @@ fn duplicate_task_id_is_e110() {
     let (code, findings) = run_check(&d.to_string());
     assert_eq!(code, 1);
     assert!(has(&findings, "E110"), "{findings:?}");
+}
+
+#[test]
+fn terminal_active_and_blank_identities_are_rejected() {
+    let mut d = base();
+    d["tasks"][0]["id"] = serde_json::json!("  ");
+    d["tasks"][0]["attempts"][0]["id"] = serde_json::json!("A\u{1b}");
+    let (code, findings) = run_check(&d.to_string());
+    assert_eq!(code, 1);
+    assert!(has(&findings, "E111"), "blank task identity: {findings:?}");
+    assert!(has(&findings, "E131"), "terminal-active attempt identity: {findings:?}");
+}
+
+#[test]
+fn task_identity_cannot_alias_a_project_row_key() {
+    let mut d = base();
+    d["dagr"] = serde_json::json!(2);
+    d["projects"] = serde_json::json!([{"id": "P", "title": "Project"}]);
+    d["tasks"][0]["id"] = serde_json::json!("project:P");
+    let (code, findings) = run_check(&d.to_string());
+    assert_eq!(code, 1);
+    assert!(has(&findings, "E113"), "{findings:?}");
 }
 
 #[test]
@@ -475,35 +497,25 @@ fn strict_turns_warnings_into_failure() {
     assert_eq!(out.status.code(), Some(1));
 }
 
-// ── §9 actions (optional extension) ────────────────────────────────────
-
 #[test]
-fn action_without_argv_is_e190() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({"accept": {"argv": []}});
-    let (_, findings) = run_check(&d.to_string());
-    assert!(has(&findings, "E190"), "{findings:?}");
-}
+fn legacy_action_data_is_readable_but_inert_in_v1_v2_and_v3() {
+    for version in [1, 2, 3] {
+        let mut d = base();
+        d["dagr"] = serde_json::json!(version);
+        d["actions"] = serde_json::json!({
+            "unblock": {"argv": ["/tmp/must-not-run", "{task}"]},
+            "arbitrary-old-shape": [false, 42, {"shell": "touch sentinel"}]
+        });
+        let (code, findings) = run_check(&d.to_string());
+        assert_eq!(code, 0, "v{version} legacy data must remain readable: {findings:?}");
+        assert!(findings.is_empty(), "v{version}: {findings:?}");
+    }
 
-#[test]
-fn unknown_placeholder_is_e191() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({"accept": {"argv": ["prod", "accept", "{tsak}", "--key", "{key}"]}});
-    let (_, findings) = run_check(&d.to_string());
-    assert!(has(&findings, "E191"), "{findings:?}");
-}
-
-#[test]
-fn unbound_verb_warns_w211_but_known_verbs_pass_clean() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({
-        "accept": {"argv": ["prod", "accept", "{task}", "--attempt", "{attempt}", "--key", "{key}"]},
-        "escalate": {"argv": ["prod", "escalate", "{task}", "--key", "{key}"]}
-    });
-    let (code, findings) = run_check(&d.to_string());
-    assert_eq!(code, 0, "{findings:?}");
-    assert!(has(&findings, "W211"), "{findings:?}");
-    assert_eq!(findings.len(), 1, "accept must be finding-free: {findings:?}");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("src/action.rs").exists(), "the producer executor must not ship");
+    let view = std::fs::read_to_string(root.join("src/view.rs")).unwrap();
+    assert!(!view.contains("start_action"), "legacy argv must have no interaction binding");
+    assert!(!view.contains("std::process::Command"), "the viewer must not spawn arbitrary commands");
 }
 
 #[test]
@@ -519,12 +531,6 @@ fn a_cycle_through_gate_inputs_is_e122() {
     });
     let (_, findings) = run_check(&d.to_string());
     assert!(has(&findings, "E122"), "{findings:?}");
-}
-
-#[test]
-fn docs_without_actions_get_no_action_findings() {
-    let (_, findings) = run_check(&base().to_string());
-    assert!(!findings.iter().any(|(_, c)| c.starts_with("E19") || c == "W211"));
 }
 
 // ── dagr stats ─────────────────────────────────────────────────────────
@@ -842,10 +848,10 @@ fn stubs_are_earned_not_ambient() {
 fn gates_show_state_bearing_joins_with_and_without_attempts() {
     let (_, out) = run_snapshot(STATES, &["--width", "200"]);
     let plain = strip_ansi(&out);
-    let g1 = plain.lines().find(|l| l.contains("⋈ G1")).expect("G1 row");
-    let g2 = plain.lines().find(|l| l.contains("⋈ G2")).expect("G2 row");
-    assert!(g1.contains("●◎✗→⋈ G1"), "G1 shows ordered done/working/failed inputs:\n{g1}");
-    assert!(g2.contains("●→⋈ G2"), "attempted G2 keeps the join:\n{g2}");
+    let g1 = plain.lines().find(|l| l.contains("◎ G1")).expect("G1 row");
+    let g2 = plain.lines().find(|l| l.contains("◎ G2")).expect("G2 row");
+    assert!(g1.contains("●◎?→◎ G1"), "G1 shows ordered done/working/lost inputs:\n{g1}");
+    assert!(g2.contains("●→◎ G2"), "attempted G2 keeps the join:\n{g2}");
     assert!(plain.contains("waits T2"), "unmet gate names its blocker");
 }
 
@@ -924,9 +930,9 @@ fn join_strip_degrades_from_inputs_to_counts_to_total() {
     let (_, wide) = run_snapshot(&doc, &["--width", "78"]);
     let (_, compact) = run_snapshot(&doc, &["--width", "28"]);
     let (_, tiny) = run_snapshot(&doc, &["--width", "20"]);
-    assert!(strip_ansi(&wide).contains("○○○○○○○→⋈ G"), "wide strip:\n{wide}");
-    assert!(strip_ansi(&compact).contains("○7→⋈ G"), "counted strip:\n{compact}");
-    assert!(strip_ansi(&tiny).contains("7→1 ⋈ G"), "tiny strip:\n{tiny}");
+    assert!(strip_ansi(&wide).contains("○○○○○○○→◎ G"), "wide strip:\n{wide}");
+    assert!(strip_ansi(&compact).contains("○7→◎ G"), "counted strip:\n{compact}");
+    assert!(strip_ansi(&tiny).contains("7→1 ◎ G"), "tiny strip:\n{tiny}");
 }
 
 #[test]
@@ -934,19 +940,77 @@ fn deep_scope_milestones_keep_the_join_and_useful_identity() {
     let compact_doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 10);
     let (_, tiny) = run_snapshot(&compact_doc, &["--width", "20"]);
     let plain = strip_ansi(&tiny);
-    let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
+    let gate = plain.lines().find(|line| line.contains("◎ GATE")).expect("gate row");
     assert!(plain.lines().any(|line| line.contains("▾ P9")), "deep project identity survives:\n{plain}");
-    assert!(gate.contains("7→1 ⋈ GATE"), "join and useful id prefix survive:\n{gate}");
+    assert!(gate.contains("7→1 ◎ GATE"), "join and useful id prefix survive:\n{gate}");
 
     let full_doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 30);
     let (_, full) = run_snapshot(&full_doc, &["--width", "96"]);
     let plain = strip_ansi(&full);
-    let gate = plain.lines().find(|line| line.contains("⋈")).expect("gate row");
+    let gate = plain.lines().find(|line| line.contains("◎ GATE")).expect("gate row");
     assert!(plain.lines().any(|line| line.contains("▾ P29")), "deep project identity survives:\n{plain}");
     assert!(
-        gate.contains("○7→⋈ GATE-LONG"),
+        gate.contains("○7→◎ GATE-LONG"),
         "counted join and useful id survive the deep full layout:\n{gate}"
     );
+}
+
+#[test]
+fn join_identity_survives_narrow_normal_and_deep_snapshots_in_both_glyph_modes() {
+    let doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 12);
+    for (fallback, glyph) in [(None, '◎'), (Some("*"), '*')] {
+        for width in [20usize, 96, 200] {
+            let (code, output) = run_snapshot_with_working_glyph(
+                &doc,
+                &["--width", &width.to_string()],
+                fallback,
+            );
+            assert_eq!(code, 0, "width={width} fallback={fallback:?}");
+            let plain = strip_ansi(&output);
+            let gate = plain
+                .lines()
+                .find(|line| line.contains(&format!("{glyph} GATE")))
+                .unwrap_or_else(|| panic!("gate identity missing at width={width}:\n{plain}"));
+            let expected = match width {
+                20 => format!("7→1 {glyph} GATE"),
+                96 | 200 => format!("○○○○○○○→{glyph} GATE-LONG"),
+                _ => unreachable!(),
+            };
+            assert!(gate.contains(&expected), "width={width}: expected {expected:?}: {gate}");
+            assert!(
+                plain.lines().any(|line| line.contains("P11")),
+                "deep project identity missing at width={width}:\n{plain}"
+            );
+        }
+    }
+}
+
+#[test]
+fn snapshot_escapes_terminal_controls_and_rejects_oversized_geometry() {
+    let hostile = serde_json::json!({
+        "dagr": 2,
+        "run": {"id": "escape", "title": "head\n\u{1b}[31mPWN\u{202e}"},
+        "tasks": [{
+            "id": "T", "title": "body\t\u{1b}]8;;bad\u{7}link\u{202e}",
+            "kind": "impl", "state": "queued", "deps": [], "attempts": []
+        }]
+    })
+    .to_string();
+    let (code, output) = run_snapshot(&hostile, &["--width", "96"]);
+    assert_eq!(code, 0);
+    let plain = strip_ansi(&output);
+    assert!(plain.contains("head\\n\\x1b[31mPWN\\u{202e}"), "{plain}");
+    assert!(plain.contains("body\\t\\x1b]8;;bad\\x07link\\u{202e}"), "{plain}");
+
+    let (code, _) = run_snapshot(&base().to_string(), &["--width", "4097"]);
+    assert_eq!(code, 2, "absurd frame widths fail closed before allocation");
+
+    let tasks: Vec<_> = (0..=4096)
+        .map(|i| serde_json::json!({"id": format!("T{i}"), "attempts": []}))
+        .collect();
+    let too_many = serde_json::json!({"dagr": 2, "run": {"id": "many"}, "tasks": tasks});
+    let (code, _) = run_snapshot(&too_many.to_string(), &["--width", "80"]);
+    assert_eq!(code, 1, "oversized documents fail before graph traversal");
 }
 
 #[test]
@@ -983,67 +1047,4 @@ fn snapshot_survives_absurd_streak() {
     });
     let (code, _) = run_snapshot(&d.to_string(), &["--select", "A·a1"]);
     assert_eq!(code, 0, "huge streak must not panic");
-}
-
-#[test]
-fn action_template_without_key_is_e192() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({
-        "accept": {"argv": ["prod", "accept", "{task}"]}
-    });
-    let (code, findings) = run_check(&d.to_string());
-    assert_eq!(code, 1);
-    assert!(has(&findings, "E192"), "{findings:?}");
-}
-
-#[test]
-fn non_string_argv_element_is_e190_at_its_path() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({
-        "accept": {"argv": ["prod", 42, "{key}"]}
-    });
-    let (code, findings) = run_check(&d.to_string());
-    assert_eq!(code, 1);
-    assert!(has(&findings, "E190"), "non-string element must be E190, not E001: {findings:?}");
-}
-
-#[test]
-fn empty_argv0_is_e193() {
-    let mut d = base();
-    d["actions"] = serde_json::json!({
-        "accept": {"argv": ["", "accept", "{key}"]}
-    });
-    let (code, findings) = run_check(&d.to_string());
-    assert_eq!(code, 1);
-    assert!(has(&findings, "E193"), "{findings:?}");
-}
-
-#[test]
-fn placeholder_in_argv0_is_e193() {
-    // the executable must be pinned by the template — an argv[0]
-    // resolved from the environment or run data at confirm time is the
-    // one slot the gate's reader is least likely to scrutinise (M4 F8)
-    for argv0 in ["{operator}", "prod-{task}"] {
-        let mut d = base();
-        d["actions"] = serde_json::json!({
-            "accept": {"argv": [argv0, "accept", "{task}", "--key", "{key}"]}
-        });
-        let (code, findings) = run_check(&d.to_string());
-        assert_eq!(code, 1, "{argv0}");
-        assert!(has(&findings, "E193"), "{argv0}: {findings:?}");
-    }
-}
-
-#[test]
-fn actions_without_generated_at_is_e194() {
-    // intent keys hash the document revision; without one every
-    // repetition of an intent keys identically forever (M4 F10)
-    let mut d = base();
-    d["actions"] = serde_json::json!({
-        "accept": {"argv": ["prod", "accept", "{task}", "--key", "{key}"]}
-    });
-    d.as_object_mut().unwrap().remove("generated_at");
-    let (code, findings) = run_check(&d.to_string());
-    assert_eq!(code, 1);
-    assert!(has(&findings, "E194"), "{findings:?}");
 }

@@ -1,4 +1,4 @@
-//! `dagr check` — lint a run-state document against contract v1.
+//! `dagr check` — lint a run-state document against contract v3.
 //!
 //! Errors mean the document misdescribes itself: dangling references,
 //! duplicate identity, task states that contradict the attempt record.
@@ -47,17 +47,6 @@ impl Report {
 /// check and view can never disagree about what a timestamp means.
 fn is_iso(ts: &str) -> bool {
     crate::model::parse_min(ts).is_some()
-}
-
-fn json_kind(v: &serde_json::Value) -> &'static str {
-    match v {
-        serde_json::Value::Null => "null",
-        serde_json::Value::Bool(_) => "bool",
-        serde_json::Value::Number(_) => "number",
-        serde_json::Value::String(_) => "string",
-        serde_json::Value::Array(_) => "array",
-        serde_json::Value::Object(_) => "object",
-    }
 }
 
 fn project_lca<'a>(
@@ -164,8 +153,8 @@ pub fn check(doc: &Doc) -> Report {
     match &doc.run {
         None => err!("E101", "run", "missing run block"),
         Some(r) => {
-            if r.id.as_deref().unwrap_or("").is_empty() {
-                err!("E101", "run.id", "run.id is required");
+            if !r.id.as_deref().is_some_and(crate::contract::valid_identity) {
+                err!("E101", "run.id", "run.id must be nonblank and terminal-safe");
             }
             ts!(&r.started_at, "run.started_at");
             if let Some(loc) = &r.orchestrator {
@@ -195,8 +184,8 @@ pub fn check(doc: &Doc) -> Report {
     let mut project_parent: HashMap<&str, Option<&str>> = HashMap::new();
     for (pi, p) in doc.projects.iter().enumerate() {
         let pp = format!("projects[{pi}]");
-        let Some(id) = p.id.as_deref().filter(|id| !id.is_empty()) else {
-            err!("E104", &pp, "project missing id");
+        let Some(id) = p.id.as_deref().filter(|id| crate::contract::valid_identity(id)) else {
+            err!("E104", &pp, "project id must be nonblank and terminal-safe");
             continue;
         };
         if !project_ids.insert(id) {
@@ -208,7 +197,7 @@ pub fn check(doc: &Doc) -> Report {
         project_parent.insert(id, p.parent.as_deref());
     }
     for (pi, p) in doc.projects.iter().enumerate() {
-        let Some(id) = p.id.as_deref().filter(|id| !id.is_empty()) else { continue };
+        let Some(id) = p.id.as_deref().filter(|id| crate::contract::valid_identity(id)) else { continue };
         if let Some(parent) = p.parent.as_deref() {
             if !project_ids.contains(parent) {
                 err!("E105", format!("projects[{pi}].parent"), "project {id} has unknown parent {:?}", parent);
@@ -232,14 +221,14 @@ pub fn check(doc: &Doc) -> Report {
     let mut attempt_ids: HashMap<&str, String> = HashMap::new(); // id -> path
     let mut future_node_ids: HashSet<&str> = HashSet::new();
     for (ti, t) in tasks.iter().enumerate() {
-        if let Some(id) = t.id.as_deref() {
+        if let Some(id) = t.id.as_deref().filter(|id| crate::contract::valid_identity(id)) {
             if !task_ids.insert(id) {
                 err!("E110", format!("tasks[{ti}]"), "duplicate task id {:?}", id);
             }
             task_by_id.entry(id).or_insert(t);
         }
         for (ai, a) in t.attempts.iter().enumerate() {
-            if let Some(id) = a.id.as_deref() {
+            if let Some(id) = a.id.as_deref().filter(|id| crate::contract::valid_identity(id)) {
                 let path = format!("tasks[{ti}].attempts[{ai}]");
                 if let Some(prev) = attempt_ids.insert(id, path.clone()) {
                     err!("E130", path, "duplicate attempt id {:?} (also at {})", id, prev);
@@ -250,8 +239,32 @@ pub fn check(doc: &Doc) -> Report {
     // one namespace: cause.ref and event refs resolve across both, so a
     // shared id is ambiguous
     for (ti, t) in tasks.iter().enumerate() {
+        if let Some(id) = t.id.as_deref() {
+            if id
+                .strip_prefix("project:")
+                .is_some_and(|project| project_ids.contains(project))
+            {
+                err!(
+                    "E113",
+                    format!("tasks[{ti}].id"),
+                    "task id {:?} collides with the selectable project row key",
+                    id
+                );
+            }
+        }
         for (ai, a) in t.attempts.iter().enumerate() {
-            if let Some(id) = a.id.as_deref() {
+            if let Some(id) = a.id.as_deref().filter(|id| crate::contract::valid_identity(id)) {
+                if id
+                    .strip_prefix("project:")
+                    .is_some_and(|project| project_ids.contains(project))
+                {
+                    err!(
+                        "E113",
+                        format!("tasks[{ti}].attempts[{ai}].id"),
+                        "attempt id {:?} collides with the selectable project row key",
+                        id
+                    );
+                }
                 if task_ids.contains(id) {
                     err!(
                         "E113",
@@ -265,7 +278,7 @@ pub fn check(doc: &Doc) -> Report {
         if let Some(p) = &t.policy {
             for (fi, fu) in p.futures.iter().enumerate() {
                 if let Some(n) = &fu.node {
-                    if let Some(id) = n.id.as_deref() {
+                    if let Some(id) = n.id.as_deref().filter(|id| crate::contract::valid_identity(id)) {
                         if !future_node_ids.insert(id) {
                             err!(
                                 "E164",
@@ -397,8 +410,8 @@ pub fn check(doc: &Doc) -> Report {
     for (ti, t) in tasks.iter().enumerate() {
         let tid = t.id.as_deref().unwrap_or("?");
         let tp = format!("tasks[{ti}]");
-        if t.id.as_deref().unwrap_or("").is_empty() {
-            err!("E111", &tp, "task missing id");
+        if !t.id.as_deref().is_some_and(crate::contract::valid_identity) {
+            err!("E111", &tp, "task id must be nonblank and terminal-safe");
         }
         if t.title.as_deref().unwrap_or("").is_empty() {
             err!("E111", format!("{tp}.title"), "task {tid} missing title");
@@ -500,7 +513,8 @@ pub fn check(doc: &Doc) -> Report {
                     }
                     (None, Some(n)) => {
                         match n.id.as_deref() {
-                            None | Some("") => err!("E164", &fp, "future node in task {tid} missing id"),
+                            None => err!("E164", &fp, "future node in task {tid} missing id"),
+                            Some(id) if !crate::contract::valid_identity(id) => err!("E164", &fp, "future node in task {tid} has a blank or terminal-unsafe id"),
                             Some(id) => {
                                 if task_ids.contains(id) || attempt_ids.contains_key(id) {
                                     err!("E164", &fp, "future node id {:?} collides with an existing task/attempt — a future is not yet real", id);
@@ -538,8 +552,8 @@ pub fn check(doc: &Doc) -> Report {
         for (ai, a) in t.attempts.iter().enumerate() {
             let ap = format!("{tp}.attempts[{ai}]");
             let aid = a.id.as_deref().unwrap_or("?");
-            if a.id.as_deref().unwrap_or("").is_empty() {
-                err!("E131", &ap, "attempt in task {tid} missing id");
+            if !a.id.as_deref().is_some_and(crate::contract::valid_identity) {
+                err!("E131", &ap, "attempt in task {tid} needs a nonblank terminal-safe id");
             }
             match a.n {
                 None | Some(0) => err!("E131", &ap, "attempt {aid} missing n (1-based attempt number)"),
@@ -782,67 +796,6 @@ pub fn check(doc: &Doc) -> Report {
     }
     if disordered {
         warn!("W207", "events", "events are not in ascending time order — the log should append, not shuffle");
-    }
-
-    // ── actions (§9, optional extension) — validated only when present ──
-    if let Some(actions) = &doc.actions {
-        for (verb, tpl) in actions {
-            let ap = format!("actions.{verb}");
-            match tpl.argv.as_deref() {
-                None | Some([]) => {
-                    err!("E190", ap, "action {verb:?} has no argv — templates are argv arrays, never shell strings");
-                }
-                Some(argv) => {
-                    let mut has_key = false;
-                    for (i, raw) in argv.iter().enumerate() {
-                        let Some(arg) = raw.as_str() else {
-                            err!(
-                                "E190",
-                                format!("{ap}.argv[{i}]"),
-                                "argv elements must be strings (found {})",
-                                json_kind(raw)
-                            );
-                            continue;
-                        };
-                        if i == 0 && (arg.is_empty() || arg.contains('\0') || arg.contains('{')) {
-                            err!("E193", format!("{ap}.argv[0]"), "argv[0] must be a literal executable name — nonempty, no NUL, no placeholders (the executable must be pinned by the template, never resolved from run data or the environment)");
-                        }
-                        has_key = has_key || arg.contains("{key}");
-                        // every {…} token must be a known placeholder; a typo
-                        // here silently sends a literal brace-string to the CLI
-                        let mut rest = arg;
-                        while let Some(open) = rest.find('{') {
-                            let Some(close) = rest[open..].find('}') else { break };
-                            let ph = &rest[open..open + close + 1];
-                            if !crate::contract::ACTION_PLACEHOLDERS.contains(&ph) {
-                                err!(
-                                    "E191",
-                                    format!("{ap}.argv[{i}]"),
-                                    "unknown placeholder {ph:?} (known: {})",
-                                    crate::contract::ACTION_PLACEHOLDERS.join(" ")
-                                );
-                            }
-                            rest = &rest[open + close + 1..];
-                        }
-                    }
-                    // "always with idempotency keys" is a §9 guarantee, not
-                    // a suggestion: an executable template without {key}
-                    // gives the producer nothing to dedupe on.
-                    if !has_key {
-                        err!("E192", ap, "action {verb:?} template carries no {{key}} placeholder — confirmed retries would be indistinguishable from new intents");
-                    }
-                }
-            }
-            if !crate::contract::BOUND_ACTIONS.contains(&verb.as_str()) {
-                warn!("W211", ap, "action {verb:?} is declared but the pane binds no key to it (bound: {})", crate::contract::BOUND_ACTIONS.join(" "));
-            }
-        }
-        // idempotency keys hash the document revision; without one every
-        // repetition of an intent keys identically forever, so a later
-        // same-shaped intent is swallowed as a replay
-        if !actions.is_empty() && doc.generated_at.is_none() {
-            err!("E194", "actions", "actions are declared but the document has no generated_at — intent keys need a document revision to distinguish repeated intents");
-        }
     }
 
     Report {

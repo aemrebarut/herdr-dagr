@@ -1,5 +1,5 @@
 {
-  "dagr": 2,
+  "dagr": 3,
   "run": {
     "id": "run-projects-v01",
     "title": "example: recursive projects and scope gates",
