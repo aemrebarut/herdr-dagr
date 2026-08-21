@@ -164,19 +164,18 @@ single-cell ASCII working mark.
 
 ## Layout
 
-One responsive pane, two graph grammars, with selected-item detail always
-docked at full width below the graph:
+One responsive pane, two graph grammars, with a stable selected-item inspector
+at full width below the graph:
 
 - **At ~146 columns and up** (the screenshot above): trace left and a
   compact attention queue right. lazygit's grammar.
 - **Below that**: full-width trace. tig's grammar.
 
-At either width, cursor movement live-updates the full-width detail dock,
-including criteria, receipts, operator messages, and the provenance event tail.
-The graph scrolls independently, so a long run cannot push that dock or the
-command footer below the terminal. Detail fields wrap to the available columns;
-on an exceptionally short pane, the dock keeps its heading and actions visible
-and explicitly counts any body rows that cannot fit.
+At either width, cursor movement updates exactly three lines without moving the
+graph: identity/state, the most useful operational signal, then actor/timing and
+`model·thinking`. Press `d` for a focus-plus-context view of the selected node's
+direct inputs and outputs; the complete detail body scrolls independently below
+it. Press `d` or `esc` to return to the exact graph position.
 
 ![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
 
@@ -188,7 +187,8 @@ Both screenshots are real renderer output, regenerable with
 
 The basics: `j/k` move (`g/G` jump to the ends, `ctrl-d/u` half-page),
 `tab` cycles the attention queue, `enter` focuses the selected
-attempt's herdr pane, `m` opens the orchestrator message composer,
+attempt's herdr pane, `d` opens its causal neighborhood and full scrollable
+detail card, `m` opens the orchestrator message composer,
 `r` reloads, `?` opens help, and `q` quits. In the composer, `tab` cycles
 Use judgment / Get guidance / Snooze, `ctrl-t` changes authority, and all
 text remains editable. An adjacent `actions.json` can replace or add a few
@@ -202,7 +202,7 @@ buries an alarm. `→` unfolds, and on an open branch it zooms: the
 subtree takes over the pane with a breadcrumb up top, and anything
 outside that still needs eyes shows as a `+n need eyes outside`
 counter, so zooming can't hide trouble either. `z` folds everything
-that has settled, in one press. `esc` backs out of help, picker,
+that has settled, in one press. `esc` backs out of details, help, picker,
 search, and zoom before it ever quits.
 
 Finding things is quick too: `f` opens a file picker that lists your
@@ -212,8 +212,9 @@ rows by id, name, or agent as you type, `n/N` walk the matches, and `y`
 copies the selected row id to your clipboard.
 
 The mouse works too: click a trace row or a queue item to select it,
-click a `▸` chip to unfold it, double-click a row to zoom into it,
-scroll to move the cursor, and drag across anything to select text,
+click the inspector for details, click a `▸` chip to unfold it,
+double-click a row to zoom into it, scroll to move the cursor (or the open
+detail card), and drag across anything to select text,
 which lands on your clipboard when you let go. The message action in the
 focus card is clickable; Enter remains the deliberate submission step.
 Legacy v1/v2 action data remains readable but has no key binding or execution

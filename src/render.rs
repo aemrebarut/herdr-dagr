@@ -1,8 +1,9 @@
 //! Rows → ANSI frames. Two layouts, both established terminal grammars:
 //! `sidecar` (≥ ~146 cols: trace left, attention queue right) folding to
-//! `cockpit` (full-width trace). In both, the selected item's detail is
-//! docked full-width below the graph. Renderers are pure functions of
-//! (state, width).
+//! `cockpit` (full-width trace). Interactive browsing uses a stable
+//! three-row inspector; an explicit detail mode swaps the trace for a
+//! focus-plus-context lens above the full card. Renderers are pure functions
+//! of (state, width, presentation mode).
 
 use crate::contract::{Attempt, Doc, Task};
 use crate::model::{parse_min, GateJoin, Row, Scene, Seg};
@@ -575,6 +576,344 @@ fn find_selection<'a>(doc: &'a Doc, key: &str) -> Option<(&'a Task, Option<&'a A
     (found.len() == 1).then(|| found[0])
 }
 
+/// Preserve the reasoning-effort suffix when a producer supplied the
+/// recommended `model·effort` chip and an unusually narrow pane forces a
+/// truncation. `very-long-model·max` becoming `very…·max` is more useful than
+/// silently dropping the effort from the right edge.
+fn compact_model_chip(model: &str, width: usize) -> String {
+    let safe = style::terminal_safe(model);
+    if safe.width() <= width {
+        return safe;
+    }
+    if let Some((name, effort)) = safe.rsplit_once('·') {
+        let suffix = format!("·{effort}");
+        if suffix.width() + 2 <= width {
+            return format!("{}{}", trunc(name, width - suffix.width()), suffix);
+        }
+    }
+    trunc(&safe, width)
+}
+
+fn task_state<'a>(doc: &'a Doc, id: &str) -> &'a str {
+    doc.tasks
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .find(|task| task.id.as_deref() == Some(id))
+        .and_then(|task| task.state.as_deref())
+        .unwrap_or("queued")
+}
+
+fn dependency_summary(doc: &Doc, task: &Task) -> Option<String> {
+    let ids = task.inputs.as_deref().unwrap_or(&task.deps);
+    if ids.is_empty() {
+        return None;
+    }
+    let mut out = if task.kind.as_deref() == Some("gate") {
+        String::from("joins ")
+    } else {
+        String::from("waits ")
+    };
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            out.push_str(" · ");
+        }
+        out.push(style::chip_mark(task_state(doc, id)));
+        out.push(' ');
+        out.push_str(id);
+    }
+    Some(out)
+}
+
+/// The one decision-relevant sentence in the compact inspector. This is a
+/// semantic projection, not "the first wrapped focus-card line": attention
+/// and failure reasons outrank provenance, while healthy work leads with
+/// progress and queued work names what it is waiting for.
+fn operational_summary(
+    doc: &Doc,
+    task: &Task,
+    attempt: Option<&Attempt>,
+    state: &str,
+) -> (String, Style) {
+    if matches!(state, "blocked" | "needs_answer") {
+        if let Some(unblock) = task.unblock.as_deref().filter(|value| !value.is_empty()) {
+            return (format!("needs {unblock}"), Style::bold(style::state_color(state)));
+        }
+        if let Some(reason) = attempt
+            .and_then(|a| a.cause.as_ref())
+            .and_then(|cause| cause.reason.as_deref())
+            .filter(|value| !value.is_empty())
+        {
+            return (reason.to_string(), Style::bold(style::state_color(state)));
+        }
+    }
+
+    if matches!(state, "failed" | "rejected" | "lost") {
+        if let Some(reason) = attempt
+            .and_then(|a| a.outcome.as_ref())
+            .and_then(|outcome| outcome.reason.as_deref())
+            .filter(|value| !value.is_empty())
+        {
+            return (reason.to_string(), Style::bold(style::state_color(state)));
+        }
+    }
+
+    if state == "working" {
+        if let Some(progress) = attempt.and_then(|a| a.progress.as_ref()) {
+            let mut text = String::from("progress");
+            if let (Some(done), Some(total)) = (progress.done, progress.total) {
+                text.push_str(&format!(" {done}/{total}"));
+            }
+            if let Some(note) = progress.note.as_deref().filter(|value| !value.is_empty()) {
+                text.push_str(&format!(" · {note}"));
+            }
+            return (text, Style::fg(style::WORKING));
+        }
+        if let Some(live) = attempt.and_then(|a| a.liveness.as_ref()) {
+            let mut parts = Vec::new();
+            if live.prompt_acknowledged == Some(false) {
+                parts.push("prompt not acknowledged".to_string());
+            }
+            if let (Some(now), Some(last)) = (
+                doc.generated_at.as_deref().and_then(parse_min),
+                live.last_output_at.as_deref().and_then(parse_min),
+            ) {
+                parts.push(format!("last output {}m ago", (now - last).max(0)));
+            }
+            if live.queued_input.unwrap_or(0) > 0 {
+                parts.push(format!("{} queued input", live.queued_input.unwrap_or(0)));
+            }
+            if !parts.is_empty() {
+                return (parts.join(" · "), Style::dim(style::WORKING));
+            }
+        }
+    }
+
+    if state == "review" {
+        return ("awaiting review".into(), Style::fg(style::REVIEW));
+    }
+    if matches!(state, "queued" | "waiting" | "ready" | "unassigned") {
+        if let Some(summary) = dependency_summary(doc, task) {
+            return (summary, Style::dim(style::MUTED));
+        }
+        return ("ready · no unmet dependencies".into(), Style::fg(style::DONE));
+    }
+    if state == "done" {
+        if let Some(outcome) = attempt.and_then(|a| a.outcome.as_ref()) {
+            let (glyph, color) = style::evidence(outcome.evidence.as_deref().unwrap_or("asserted"));
+            let mut text = format!("{glyph} {}", outcome.evidence.as_deref().unwrap_or("asserted"));
+            if let Some(receipt) = outcome.receipt.as_deref().filter(|value| !value.is_empty()) {
+                text.push_str(&format!(" · {receipt}"));
+            }
+            return (text, Style::fg(color));
+        }
+    }
+    if state == "canceled" {
+        return ("canceled · retained as history".into(), Style::dim(style::MUTED));
+    }
+    if let Some(note) = task.note.as_deref().filter(|value| !value.is_empty()) {
+        return (note.to_string(), Style::fg(style::TEXT));
+    }
+    if let Some(criteria) = task.criteria.as_deref().filter(|value| !value.is_empty()) {
+        return (format!("criteria {criteria}"), Style::dim(style::DONE));
+    }
+    if let Some(summary) = dependency_summary(doc, task) {
+        return (summary, Style::dim(style::MUTED));
+    }
+    ("no additional context".into(), Style::dim(style::MUTED))
+}
+
+fn compact_identity_row(
+    task: &Task,
+    attempt: Option<&Attempt>,
+    now: Option<i64>,
+    width: usize,
+) -> String {
+    let mut line = Line::new(width);
+    if width == 0 {
+        return line.render(None, true);
+    }
+    let actor = attempt
+        .and_then(|a| a.actor.as_deref())
+        .or(task.owner.as_deref())
+        .unwrap_or("");
+    let model = attempt.and_then(|a| a.model.as_deref()).unwrap_or("");
+    let elapsed = attempt.and_then(|a| {
+        let start = a.started_at.as_deref().and_then(parse_min)?;
+        match (a.ended_at.as_deref().and_then(parse_min), now) {
+            (Some(end), _) if end >= start => Some(format!("{}m", end - start)),
+            (None, Some(current)) if current >= start => Some(format!("{}m…", current - start)),
+            _ => None,
+        }
+    });
+
+    // Reserve the right edge for model+effort before placing any variable
+    // actor/timing text. The two sides therefore cannot collide.
+    let right_margin = usize::from(width > 1);
+    let model_budget = width.saturating_sub(right_margin + usize::from(!actor.is_empty()) * 3);
+    let model_chip = compact_model_chip(model, model_budget);
+    let model_x = width.saturating_sub(right_margin + model_chip.width());
+    if !model_chip.is_empty() {
+        line.put(model_x, &model_chip, Style::bold(style::MUTED));
+    }
+
+    let actor_width = if model_chip.is_empty() {
+        width.saturating_sub(2)
+    } else {
+        model_x.saturating_sub(2)
+    };
+    let actor_end = line.put(1.min(width), &trunc(actor, actor_width), Style::dim(style::MUTED));
+    if let Some(elapsed) = elapsed {
+        let elapsed_x = if model_chip.is_empty() {
+            width.saturating_sub(right_margin + elapsed.width())
+        } else {
+            model_x.saturating_sub(elapsed.width() + 3)
+        };
+        if elapsed_x >= actor_end + 2 {
+            line.put(elapsed_x, &elapsed, Style::dim(style::MUTED));
+        }
+    }
+    line.render(None, true)
+}
+
+fn compact_text_row(text: &str, text_style: Style, width: usize) -> String {
+    let mut line = Line::new(width);
+    line.put(1.min(width), &trunc(text, width.saturating_sub(2)), text_style);
+    line.render(None, true)
+}
+
+/// Exactly three rows at every selection and width. The fixed contract is
+/// what keeps cursor movement from changing the graph viewport's geometry.
+pub fn compact_inspector(
+    doc: &Doc,
+    key: Option<&str>,
+    width: usize,
+    hints: Option<&crate::herdr::Hints>,
+    messages: &[crate::message::Summary],
+) -> Vec<String> {
+    if width < 8 {
+        return vec![
+            compact_text_row("…", Style::dim(style::MUTED), width),
+            compact_text_row("", Style::plain(), width),
+            compact_text_row("", Style::plain(), width),
+        ];
+    }
+    let Some(key) = key else {
+        return vec![
+            compact_text_row("─ nothing selected", Style::dim(style::MUTED), width),
+            compact_text_row("j/k selects a row", Style::dim(style::MUTED), width),
+            compact_text_row("", Style::plain(), width),
+        ];
+    };
+
+    if let Some(id) = key.strip_prefix("project:") {
+        let project = doc.projects.iter().find(|project| project.id.as_deref() == Some(id));
+        if let Some(project) = project {
+            let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
+            let color = style::state_color(&state);
+            let full = focus_card(doc, key, width, hints, messages).len();
+            let more = format!("+{}", full.saturating_sub(3));
+            let mut head = Line::new(width);
+            let right = width.saturating_sub(more.width() + 1);
+            let limit = right.saturating_sub(1);
+            let mut x = head.put(
+                1,
+                &trunc(&format!("{} {id}", style::state_glyph(&state)), limit.saturating_sub(1)),
+                Style::bold(color),
+            );
+            if x + 2 < limit {
+                x = head.put(
+                    x + 2,
+                    &trunc(&state.to_uppercase(), limit.saturating_sub(x + 2)),
+                    Style::bold(color),
+                );
+            }
+            if x + 2 < limit {
+                head.put(
+                    x + 2,
+                    &trunc(
+                        project.title.as_deref().unwrap_or("project"),
+                        limit.saturating_sub(x + 2),
+                    ),
+                    Style::fg(style::TEXT),
+                );
+            }
+            head.put(right, &more, Style::dim(style::MUTED));
+            return vec![
+                head.render(None, true),
+                compact_text_row(
+                    project.note.as_deref().unwrap_or("project scope"),
+                    Style::dim(style::MUTED),
+                    width,
+                ),
+                compact_text_row(
+                    project.owner.as_deref().unwrap_or("unassigned"),
+                    Style::dim(style::MUTED),
+                    width,
+                ),
+            ];
+        }
+    }
+
+    let Some((task, attempt)) = find_selection(doc, key) else {
+        return vec![
+            compact_text_row("─ selection unavailable", Style::bold(style::BLOCKED), width),
+            compact_text_row(
+                "reload or choose another row",
+                Style::dim(style::MUTED),
+                width,
+            ),
+            compact_text_row("", Style::plain(), width),
+        ];
+    };
+    let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "invalid".into());
+    let color = style::state_color(&state);
+    let full = focus_card(doc, key, width, hints, messages).len();
+    let more = format!("+{}", full.saturating_sub(3));
+    let display = attempt.and_then(|a| a.id.as_deref()).or(task.id.as_deref()).unwrap_or(key);
+
+    let mut head = Line::new(width);
+    let right = width.saturating_sub(more.width() + 1);
+    let limit = right.saturating_sub(1);
+    let mut x = head.put(
+        1,
+        &trunc(
+            &format!("{} {display}", style::state_glyph(&state)),
+            limit.saturating_sub(1),
+        ),
+        Style::bold(color),
+    );
+    if x + 2 < limit {
+        x = head.put(
+            x + 2,
+            &trunc(&state.to_uppercase(), limit.saturating_sub(x + 2)),
+            Style::bold(color),
+        );
+    }
+    if x + 2 < limit {
+        head.put(
+            x + 2,
+            &trunc(task.title.as_deref().unwrap_or(""), limit.saturating_sub(x + 2)),
+            Style::fg(style::TEXT),
+        );
+    }
+    head.put(right, &more, Style::dim(style::MUTED));
+
+    let (summary, summary_style) = operational_summary(doc, task, attempt, &state);
+    let mut operational = Line::new(width);
+    operational.put(1, &trunc(&summary, width.saturating_sub(2)), summary_style);
+    vec![
+        head.render(None, true),
+        operational.render(None, true),
+        compact_identity_row(
+            task,
+            attempt,
+            doc.generated_at.as_deref().and_then(parse_min),
+            width,
+        ),
+    ]
+}
+
 pub fn focus_card(
     doc: &Doc,
     key: &str,
@@ -877,6 +1216,222 @@ pub fn focus_card(
     lines
 }
 
+fn project_breadcrumb(doc: &Doc, project_id: Option<&str>) -> String {
+    let Some(mut current) = project_id else { return "run root".into() };
+    let mut path = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(current.to_string()) {
+        let Some(project) = doc.projects.iter().find(|project| project.id.as_deref() == Some(current))
+        else {
+            path.push(current.to_string());
+            break;
+        };
+        path.push(project.title.as_deref().or(project.id.as_deref()).unwrap_or(current).to_string());
+        let Some(parent) = project.parent.as_deref() else { break };
+        current = parent;
+    }
+    path.reverse();
+    if path.is_empty() { "run root".into() } else { path.join(" / ") }
+}
+
+fn relation_row(label: &str, relations: &[(String, String)], width: usize) -> String {
+    let mut line = Line::new(width);
+    let content_x = if width >= 48 { 14 } else { 9.min(width.saturating_sub(1)) };
+    line.put(1.min(width), label, Style::dim(style::MUTED));
+    if relations.is_empty() {
+        line.put(content_x, "· none", Style::dim(style::MUTED));
+        return line.render(None, true);
+    }
+
+    let mut x = content_x;
+    let mut shown = 0usize;
+    for (id, state) in relations {
+        let chip = format!("{} {id}", style::state_glyph(state));
+        // Keep four cells for a truthful +N tail when more relationships do
+        // not fit. A clipped identifier is worse than an explicit count.
+        let reserve = if shown + 1 < relations.len() { 5 } else { 1 };
+        if x + chip.width() + reserve > width {
+            break;
+        }
+        if shown > 0 {
+            x = line.put(x, "  ", Style::plain());
+        }
+        x = line.put(x, &style::state_glyph(state).to_string(), Style::bold(style::state_color(state)));
+        x = line.put(x + 1, id, Style::fg(style::TEXT));
+        shown += 1;
+    }
+    let hidden = relations.len().saturating_sub(shown);
+    if hidden > 0 {
+        let more = format!("+{hidden}");
+        let more_x = x.max(width.saturating_sub(more.width() + 1));
+        line.put(more_x.min(width.saturating_sub(more.width())), &more, Style::bold(style::ACCENT));
+    }
+    line.render(None, true)
+}
+
+fn lens_connector(count: usize, width: usize) -> String {
+    let mut line = Line::new(width);
+    let x = if width >= 48 { 15 } else { 10.min(width.saturating_sub(1)) };
+    let mark = match count {
+        0 => "·",
+        1 => "│",
+        _ => "╲┼╱",
+    };
+    line.put(x.saturating_sub(usize::from(count > 1)), mark, Style::dim(style::ACCENT));
+    line.render(None, true)
+}
+
+fn selected_lens_row(key: &str, title: &str, state: &str, glyph: char, width: usize) -> String {
+    let mut line = Line::new(width);
+    let content_x = if width >= 48 { 14 } else { 9.min(width.saturating_sub(1)) };
+    line.put(1.min(width), "focus", Style::bold(style::ACCENT));
+    let mut x = line.put(content_x, &glyph.to_string(), Style::bold(style::state_color(state)));
+    x = line.put(x + 1, key, Style::bold(style::state_color(state)));
+    if x + 2 < width {
+        line.put(x + 2, &trunc(title, width.saturating_sub(x + 3)), Style::fg(style::TEXT));
+    }
+    line.render(Some(style::SEL_BG), true)
+}
+
+/// A six-row causal lens for explicit detail mode. It follows declared DAG
+/// relationships rather than neighboring display rows, so cross-project
+/// dependencies and gate fan-in remain truthful after the full trace is
+/// compressed. Direct nodes keep short labels; overflow becomes dots/counts.
+fn focus_lens(doc: &Doc, scene: &Scene, key: &str, width: usize) -> (Vec<String>, usize) {
+    if let Some((task, attempt)) = find_selection(doc, key) {
+        let tid = task.id.as_deref().unwrap_or(key);
+        let input_ids = task.inputs.as_deref().unwrap_or(&task.deps);
+        let inputs = input_ids
+            .iter()
+            .map(|id| (id.clone(), task_state(doc, id).to_string()))
+            .collect::<Vec<_>>();
+        let outputs = doc
+            .tasks
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter_map(|candidate| {
+                let deps = candidate.inputs.as_deref().unwrap_or(&candidate.deps);
+                deps.iter().any(|dependency| dependency == tid).then(|| {
+                    (
+                        candidate.id.clone().unwrap_or_else(|| "?".into()),
+                        candidate.state.clone().unwrap_or_else(|| "queued".into()),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
+        let glyph = scene
+            .rows
+            .iter()
+            .find(|row| row.key == key)
+            .map(|row| row.glyph)
+            .unwrap_or_else(|| style::state_glyph(&state));
+        let display = attempt.and_then(|a| a.id.as_deref()).unwrap_or(tid);
+        let scope = project_breadcrumb(doc, task.project.as_deref());
+        let mut scope_line = Line::new(width);
+        scope_line.put(1.min(width), "scope", Style::dim(style::MUTED));
+        scope_line.put(
+            if width >= 48 { 14 } else { 9.min(width.saturating_sub(1)) },
+            &trunc(&scope, width.saturating_sub(if width >= 48 { 15 } else { 10 })),
+            Style::bold(style::TEXT),
+        );
+        return (
+            vec![
+                scope_line.render(None, true),
+                relation_row("inputs", &inputs, width),
+                lens_connector(inputs.len(), width),
+                selected_lens_row(display, task.title.as_deref().unwrap_or(""), &state, glyph, width),
+                lens_connector(usize::from(!outputs.is_empty()), width),
+                relation_row("unlocks", &outputs, width),
+            ],
+            3,
+        );
+    }
+
+    // Projects use the same lens grammar: parent scope above, direct child
+    // projects/tasks below. They have no model identity and no task action.
+    if let Some(id) = key.strip_prefix("project:") {
+        if let Some(project) = doc.projects.iter().find(|project| project.id.as_deref() == Some(id)) {
+            let inputs = project
+                .parent
+                .as_deref()
+                .map(|parent| {
+                    let project_key = format!("project:{parent}");
+                    vec![(
+                        parent.to_string(),
+                        crate::model::selection_state(doc, &project_key).unwrap_or_else(|| "queued".into()),
+                    )]
+                })
+                .unwrap_or_default();
+            let mut outputs = doc
+                .projects
+                .iter()
+                .filter(|child| child.parent.as_deref() == Some(id))
+                .map(|child| {
+                    let child_id = child.id.as_deref().unwrap_or("?");
+                    let child_key = format!("project:{child_id}");
+                    (
+                        child_id.to_string(),
+                        crate::model::selection_state(doc, &child_key).unwrap_or_else(|| "queued".into()),
+                    )
+                })
+                .collect::<Vec<_>>();
+            outputs.extend(
+                doc.tasks
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|task| task.project.as_deref() == Some(id))
+                    .map(|task| {
+                        (
+                            task.id.clone().unwrap_or_else(|| "?".into()),
+                            task.state.clone().unwrap_or_else(|| "queued".into()),
+                        )
+                    }),
+            );
+            let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
+            let scope = project_breadcrumb(doc, Some(id));
+            let mut scope_line = Line::new(width);
+            scope_line.put(1.min(width), "scope", Style::dim(style::MUTED));
+            scope_line.put(
+                if width >= 48 { 14 } else { 9.min(width.saturating_sub(1)) },
+                &trunc(&scope, width.saturating_sub(if width >= 48 { 15 } else { 10 })),
+                Style::bold(style::TEXT),
+            );
+            return (
+                vec![
+                    scope_line.render(None, true),
+                    relation_row("parent", &inputs, width),
+                    lens_connector(inputs.len(), width),
+                    selected_lens_row(
+                        id,
+                        project.title.as_deref().unwrap_or("project"),
+                        &state,
+                        style::state_glyph(&state),
+                        width,
+                    ),
+                    lens_connector(usize::from(!outputs.is_empty()), width),
+                    relation_row("contains", &outputs, width),
+                ],
+                3,
+            );
+        }
+    }
+
+    (
+        vec![
+            paint("scope  unavailable", Style::dim(style::MUTED)),
+            String::new(),
+            String::new(),
+            paint("focus  selection unavailable", Style::bold(style::BLOCKED)),
+            String::new(),
+            String::new(),
+        ],
+        3,
+    )
+}
+
 // ── attention queue panel ───────────────────────────────────────────
 
 pub fn queue_panel(scene: &Scene, qw: usize) -> Vec<String> {
@@ -931,6 +1486,17 @@ pub struct FrameInput<'a> {
     pub messages: &'a [crate::message::Summary],
 }
 
+/// The logical frame can serve three consumers without conflating their
+/// geometry: snapshots keep the complete card, ordinary interaction gets a
+/// stable three-row inspector, and explicit details get a causal lens plus
+/// the complete card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InspectorMode {
+    Full,
+    Compact,
+    Focus,
+}
+
 /// What a left-click on a frame region means. The renderer owns the
 /// layout, so it is the only thing that can say which screen cells
 /// belong to which row — the view just replays these against (x, y).
@@ -944,6 +1510,8 @@ pub enum HitTarget {
     Fold(String),
     /// Open the contextual orchestrator-message composer.
     Message,
+    /// Expand the compact inspector into focus-plus-context detail mode.
+    Details,
 }
 
 #[derive(Clone)]
@@ -972,6 +1540,10 @@ pub struct Frame {
 }
 
 pub fn compose(input: &FrameInput, w: usize) -> Frame {
+    compose_with_inspector(input, w, InspectorMode::Full)
+}
+
+pub fn compose_with_inspector(input: &FrameInput, w: usize, inspector: InspectorMode) -> Frame {
     let scene = input.scene;
     let sel_row = input
         .selected
@@ -1017,7 +1589,12 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
 
     let sel = input.selected;
     let mut hits: Vec<Hit> = Vec::new();
-    if w >= FOLD_WIDTH {
+    if inspector == InspectorMode::Focus {
+        let base = out.len();
+        let (lens, selected) = focus_lens(input.doc, scene, sel.unwrap_or(""), w);
+        sel_line = Some(base + selected);
+        out.extend(lens);
+    } else if w >= FOLD_WIDTH {
         // sidecar: trace left · compact attention queue right. Selection
         // detail is deliberately not part of this fixed-width rail: it is
         // docked across the full frame after the graph in both layouts.
@@ -1094,16 +1671,24 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
     }
 
-    // A selection is explanatory content, not an attention-queue field.
-    // Give it the complete frame at every breakpoint so adding terminal
-    // width always reveals more criteria, receipts, and operator messages.
+    // Browse mode has exactly three inspector rows; selection content can
+    // never renegotiate the graph viewport. Full/focus modes retain complete
+    // wrapped detail for snapshots and explicit drill-down respectively.
     let graph_end = out.len();
-    if let Some(k) = sel {
-        out.push(String::new());
+    let card_w = w.saturating_sub(1);
+    if inspector == InspectorMode::Compact {
+        let detail_start = out.len();
+        out.extend(compact_inspector(input.doc, sel, card_w, input.herdr, input.messages));
+        for line in detail_start..out.len() {
+            hits.push(Hit { line, x0: 0, x1: card_w, target: HitTarget::Details });
+        }
+    } else if let Some(k) = sel {
+        if inspector == InspectorMode::Full {
+            out.push(String::new());
+        }
         // Never write the card into the terminal's final auto-wrap cell.
         // Ghostty and Herdr both correctly treat that cell as a wrap trigger,
         // which made the right border disappear at otherwise valid widths.
-        let card_w = w.saturating_sub(1);
         let card = focus_card(input.doc, k, card_w, input.herdr, input.messages);
         let card_start = out.len();
         if let Some(i) = card.iter().position(|line| line.contains("[m] message")) {
@@ -1115,7 +1700,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             });
         }
         out.extend(card);
-    } else if w < FOLD_WIDTH {
+    } else if w < FOLD_WIDTH && inspector == InspectorMode::Full {
         // Preserve the cockpit's breathing room when nothing is selected.
         out.push(String::new());
     }
@@ -1172,14 +1757,25 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
         // curated, not complete — the flash shares this row and must keep
         // room to speak; `?` holds the full list
-        let full = "j/k move · ←/→ fold/zoom · tab queue · enter focus · m message · f open · ? help · q quit";
-        let mid = "j/k · ←/→ · tab · enter · m message · f · ? · q";
+        let (full, mid, tiny) = if inspector == InspectorMode::Focus {
+            (
+                "j/k scroll · ctrl-u/d page · d/esc close · enter focus · m message · ? help · q quit",
+                "j/k scroll · d/esc close · enter · m message · ? · q",
+                "d/esc close · ? help",
+            )
+        } else {
+            (
+                "j/k move · ←/→ fold/zoom · d details · tab queue · enter focus · m message · f open · ? help · q quit",
+                "j/k · ←/→ · d details · tab · enter · m message · f · ? · q",
+                "d details · ? help",
+            )
+        };
         let keys = if full.width() < avail {
             full
         } else if mid.width() < avail {
             mid
         } else {
-            "? help"
+            tiny
         };
         let mut x = l.put(1, keys, Style::dim(style::MUTED)) + 2;
         if input.watching && x + 10 <= avail {
@@ -1201,6 +1797,7 @@ pub fn help_lines() -> Vec<String> {
         ("z", "fold every settled branch — the trace shows what still needs you · again unfolds"),
         ("g / G", "top · bottom of the trace"),
         ("ctrl-d / ctrl-u", "half a screen down · up"),
+        ("d", "open selection details with a causal neighborhood lens · d/esc closes"),
         ("tab", "cycle attention (blocked → review/questions → working)"),
         ("enter", "focus the selected attempt's herdr pane (zoom-cycle)"),
         ("m", "message the orchestrator · Tab picks a starter · text stays editable"),
@@ -1209,10 +1806,10 @@ pub fn help_lines() -> Vec<String> {
         ("/", "find a row by id, title, or agent · n/N cycle the matches"),
         ("y", "copy the selected row id to the clipboard"),
         ("r", "reload the run file now"),
-        ("mouse", "click selects · double-click zooms · a ▸ chip click unfolds · wheel moves"),
+        ("mouse", "click selects · click inspector opens details · wheel moves/scrolls detail"),
         ("drag", "select text · copied to the clipboard when you let go"),
         ("?", "toggle this help"),
-        ("q / esc", "quit (esc backs out of help and zoom first)"),
+        ("q / esc", "quit (esc backs out of help, details, and zoom first)"),
     ];
     let mut out = vec![paint(" keys", Style::bold(style::ACCENT))];
     for (k, v) in rows {
@@ -1588,6 +2185,154 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(project.contains("PROJECT-TAIL"), "project note must wrap completely:\n{project}");
+    }
+
+    fn inspector_doc() -> Doc {
+        serde_json::from_value(serde_json::json!({
+            "dagr": 3,
+            "run": {"id": "inspector", "title": "Inspector"},
+            "generated_at": "2026-08-21T10:30:00Z",
+            "projects": [
+                {"id": "APP", "title": "Application"},
+                {"id": "API", "title": "API stream", "parent": "APP"}
+            ],
+            "tasks": [
+                {"id": "PLAN", "title": "plan the API", "kind": "plan", "project": "API",
+                 "state": "done", "deps": [], "attempts": [{
+                    "id": "PLAN·a1", "n": 1, "state": "done", "actor": "planner",
+                    "model": "sol5.6·xhigh", "started_at": "2026-08-21T09:00:00Z",
+                    "ended_at": "2026-08-21T09:10:00Z",
+                    "outcome": {"result": "done", "evidence": "verified", "receipt": "plan.md"}
+                 }]},
+                {"id": "BUILD", "title": "build the API", "kind": "impl", "project": "API",
+                 "owner": "api-dev", "state": "working", "deps": ["PLAN"], "attempts": [{
+                    "id": "BUILD·a1", "n": 1, "state": "working", "actor": "api-dev",
+                    "model": "sol5.6·max", "started_at": "2026-08-21T10:00:00Z",
+                    "progress": {"done": 3, "total": 7, "note": "handlers"}
+                 }]},
+                {"id": "TEST", "title": "test the API", "kind": "test", "project": "API",
+                 "state": "queued", "deps": ["BUILD"], "attempts": []},
+                {"id": "SHIP", "title": "ship from another scope", "kind": "ship",
+                 "state": "queued", "deps": ["BUILD"], "attempts": []}
+            ],
+            "events": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn compact_inspector_is_three_rows_and_reserves_model_effort_without_collision() {
+        let doc = inspector_doc();
+        let escaped = compact_model_chip("sol\x1b·max", 11);
+        assert!(escaped.width() <= 11);
+        assert!(escaped.ends_with("·max"));
+        for width in [72usize, 20] {
+            let lines = compact_inspector(&doc, Some("BUILD·a1"), width, None, &[])
+                .iter()
+                .map(|line| crate::select::plain(line))
+                .collect::<Vec<_>>();
+            assert_eq!(lines.len(), 3);
+            assert!(lines[0].contains("BUILD·a1"));
+            if width >= 32 {
+                assert!(lines[0].contains("WORKING"));
+            } else {
+                assert!(
+                    lines[0].trim_start().starts_with("◎"),
+                    "the state glyph survives narrow mode"
+                );
+            }
+            assert!(lines[1].contains("progress 3/7"));
+            if width >= 32 {
+                assert!(lines[1].contains("handlers"));
+            }
+            assert!(lines[2].contains("api-dev"), "width={width}: actor missing: {:?}", lines[2]);
+            assert!(
+                lines[2].contains("sol5.6·max"),
+                "width={width}: model+effort must survive intact: {:?}",
+                lines[2]
+            );
+            assert!(
+                lines[2].find("api-dev").unwrap() < lines[2].find("sol5.6·max").unwrap(),
+                "width={width}: independently anchored fields collided: {:?}",
+                lines[2]
+            );
+            assert!(lines.iter().all(|line| line.width() == width));
+        }
+
+        let scene = model::build(
+            &doc,
+            Some("BUILD·a1"),
+            None,
+            None,
+            &model::ViewOpts::default(),
+        );
+        let frame = compose_with_inspector(
+            &FrameInput {
+                doc: &doc,
+                scene: &scene,
+                selected: Some("BUILD·a1"),
+                banner: None,
+                flash: None,
+                stale_min: None,
+                watching: false,
+                herdr: None,
+                prompt: None,
+                messages: &[],
+            },
+            72,
+            InspectorMode::Compact,
+        );
+        assert_eq!(frame.detail_end - frame.graph_end, 3);
+        assert_eq!(
+            frame
+                .hits
+                .iter()
+                .filter(|hit| matches!(hit.target, HitTarget::Details))
+                .count(),
+            3,
+            "the whole compact inspector is a drill-down target"
+        );
+    }
+
+    #[test]
+    fn focus_lens_uses_declared_causality_and_project_breadcrumbs() {
+        let doc = inspector_doc();
+        let scene = model::build(
+            &doc,
+            Some("BUILD·a1"),
+            None,
+            None,
+            &model::ViewOpts::default(),
+        );
+        let frame = compose_with_inspector(
+            &FrameInput {
+                doc: &doc,
+                scene: &scene,
+                selected: Some("BUILD·a1"),
+                banner: None,
+                flash: None,
+                stale_min: None,
+                watching: false,
+                herdr: None,
+                prompt: None,
+                messages: &[],
+            },
+            78,
+            InspectorMode::Focus,
+        );
+        let graph = frame.lines[..frame.graph_end]
+            .iter()
+            .map(|line| crate::select::plain(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(graph.contains("Application / API stream"), "scope breadcrumb:\n{graph}");
+        assert!(graph.contains("inputs") && graph.contains("PLAN"), "upstream edge:\n{graph}");
+        assert!(graph.contains("focus") && graph.contains("BUILD·a1"), "focus:\n{graph}");
+        assert!(
+            graph.contains("unlocks") && graph.contains("TEST") && graph.contains("SHIP"),
+            "all direct dependents, including cross-project edges:\n{graph}"
+        );
+        assert!(frame.lines[frame.graph_end..].iter().any(|line| line.contains("[m] message")));
     }
 
     #[test]

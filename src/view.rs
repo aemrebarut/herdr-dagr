@@ -180,6 +180,14 @@ struct App {
     /// Height of the scrollable graph region. Page navigation must use the
     /// master pane, not count the fixed detail dock and footer as rows.
     page_rows: usize,
+    /// Explicit focus-plus-context drill-down. Ordinary selection never
+    /// changes geometry; only `d`/Esc crosses this boundary.
+    details_open: bool,
+    /// Independent scroll state for the full detail body. The selected task
+    /// is frozen while this is active, so graph position remains restorable.
+    detail_scroll: usize,
+    detail_scroll_max: usize,
+    detail_page_rows: usize,
     /// The painted lines of the last draw, kept so a copy returns exactly
     /// what was on screen.
     frame: Vec<String>,
@@ -265,6 +273,27 @@ impl App {
             Some(i) => (i as i64 + delta).clamp(0, keys.len() as i64 - 1) as usize,
         };
         self.selected = Some(keys[next].clone());
+    }
+
+    fn toggle_details(&mut self) {
+        if self.details_open {
+            self.details_open = false;
+            self.detail_scroll = 0;
+            self.detail_scroll_max = 0;
+            return;
+        }
+        if self.selected.is_none() {
+            self.flash = Some(("select a row first".into(), 8));
+            return;
+        }
+        self.details_open = true;
+        self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
+    }
+
+    fn move_detail(&mut self, delta: i64) {
+        self.detail_scroll = (self.detail_scroll as i64 + delta)
+            .clamp(0, self.detail_scroll_max as i64) as usize;
     }
 
     fn cycle_queue(&mut self) {
@@ -482,6 +511,9 @@ impl App {
         self.search = None;
         self.search_matches = 0;
         self.selected = None;
+        self.details_open = false;
+        self.detail_scroll = 0;
+        self.detail_scroll_max = 0;
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -617,6 +649,11 @@ impl App {
                 self.folded.remove(&key);
             }
             Some(render::HitTarget::Message) => self.start_message(),
+            Some(render::HitTarget::Details) => {
+                if !self.details_open {
+                    self.toggle_details();
+                }
+            }
             None => {}
         }
     }
@@ -906,7 +943,14 @@ impl App {
                 // rows do
                 self.zoom.retain(|k| model::key_exists(&self.loaded.doc, k));
                 self.folded.retain(|k| model::key_exists(&self.loaded.doc, k));
+                let detail_target = self.selected.clone();
                 self.snap_selection();
+                if self.details_open && self.selected != detail_target {
+                    self.details_open = false;
+                    self.detail_scroll = 0;
+                    self.detail_scroll_max = 0;
+                    self.flash = Some(("details closed: selected row changed on reload".into(), 10));
+                }
                 self.update_watch();
             }
             Err(e) => self.flash = Some((e, 20)),
@@ -947,6 +991,10 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         hits: Vec::new(),
         view_rows: 0,
         page_rows: 0,
+        details_open: false,
+        detail_scroll: 0,
+        detail_scroll_max: 0,
+        detail_page_rows: 0,
         frame: Vec::new(),
         sel: None,
         painted: Vec::new(),
@@ -1027,6 +1075,37 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                     if k.code == Char('c') && ctrl {
                         return Ok(());
                     }
+                    if app.details_open && !app.help {
+                        match k.code {
+                            Char('q') => return Ok(()),
+                            Char('d') if ctrl => {
+                                app.move_detail(app.detail_page_rows.max(1) as i64)
+                            }
+                            Char('u') if ctrl => {
+                                app.move_detail(-((app.detail_page_rows.max(1)) as i64))
+                            }
+                            PageDown => app.move_detail(app.detail_page_rows.max(1) as i64),
+                            PageUp => app.move_detail(-((app.detail_page_rows.max(1)) as i64)),
+                            Esc | Char('d') => app.toggle_details(),
+                            Char('j') | Down => app.move_detail(1),
+                            Char('k') | Up => app.move_detail(-1),
+                            Char('g') | Home => app.detail_scroll = 0,
+                            Char('G') | End => app.detail_scroll = app.detail_scroll_max,
+                            Enter => app.focus(),
+                            Char('m') => app.start_message(),
+                            Char('y') => {
+                                if let Some(key) = app.selected.clone() {
+                                    write!(stdout, "{}", select::osc52(&key))
+                                        .map_err(|e| e.to_string())?;
+                                    stdout.flush().map_err(|e| e.to_string())?;
+                                    app.flash = Some((format!("copied {key}"), 8));
+                                }
+                            }
+                            Char('?') => app.help = true,
+                            _ => {}
+                        }
+                        continue;
+                    }
                     match k.code {
                         Char('q') => return Ok(()),
                         Esc => {
@@ -1063,6 +1142,7 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         }
                         Left | Char('h') => app.fold_or_up(),
                         Char('z') => app.toggle_settled(),
+                        Char('d') => app.toggle_details(),
                         Char('f') => app.enter_picker(),
                         Char('/') => {
                             app.search_matches = 0;
@@ -1183,11 +1263,19 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         }
                         MouseEventKind::ScrollDown if normal && !app.help => {
                             app.sel = None;
-                            app.move_sel(1);
+                            if app.details_open {
+                                app.move_detail(1);
+                            } else {
+                                app.move_sel(1);
+                            }
                         }
                         MouseEventKind::ScrollUp if normal && !app.help => {
                             app.sel = None;
-                            app.move_sel(-1);
+                            if app.details_open {
+                                app.move_detail(-1);
+                            } else {
+                                app.move_sel(-1);
+                            }
                         }
                         _ => {}
                     }
@@ -1266,6 +1354,9 @@ struct ScreenFrame {
     hits: Vec<render::Hit>,
     graph_start: usize,
     graph_rows: usize,
+    detail_scroll: usize,
+    detail_scroll_max: usize,
+    detail_page_rows: usize,
 }
 
 /// When a producer-controlled detail value is taller than the terminal can
@@ -1329,19 +1420,130 @@ fn fit_detail(
     }
 }
 
+fn detail_position_line(width: usize, first: usize, last: usize, total: usize) -> String {
+    let cw = width.saturating_sub(1);
+    let mut line = style::Line::new(cw);
+    let above = first > 1;
+    let below = last < total;
+    let arrows = match (above, below) {
+        (true, true) => "↑↓",
+        (true, false) => "↑",
+        (false, true) => "↓",
+        (false, false) => "",
+    };
+    line.put(
+        2.min(cw),
+        &format!("details {first}–{last}/{total} {arrows}"),
+        style::Style::dim(style::MUTED),
+    );
+    line.render(None, true)
+}
+
+/// Scroll only the explanatory body. The identity heading and action/closing
+/// rows stay fixed so the user never loses either orientation or escape
+/// affordances while reading a long receipt.
+fn scroll_detail(
+    frame: &render::Frame,
+    start: usize,
+    end: usize,
+    budget: usize,
+    width: usize,
+    requested: usize,
+) -> (Vec<ScreenLine>, usize, usize, usize) {
+    if budget == 0 {
+        return (Vec::new(), 0, 0, 0);
+    }
+    let len = end.saturating_sub(start);
+    if len <= budget {
+        let mut lines = (start..end).map(ScreenLine::Frame).collect::<Vec<_>>();
+        while lines.len() < budget {
+            lines.push(ScreenLine::Generated(String::new()));
+        }
+        return (lines, 0, 0, len.saturating_sub(3));
+    }
+    if budget < 5 || len < 3 {
+        let mut lines = fit_detail(start, end, budget, width);
+        while lines.len() < budget {
+            lines.push(ScreenLine::Generated(String::new()));
+        }
+        return (lines, 0, 0, 0);
+    }
+
+    let action = (start + 1..end)
+        .rev()
+        .find(|line| {
+            frame
+                .lines
+                .get(*line)
+                .is_some_and(|text| text.contains("[m] message"))
+        });
+    let tail_start = action.unwrap_or_else(|| end.saturating_sub(1));
+    let tail_len = end.saturating_sub(tail_start);
+    let fixed = 2 + tail_len; // heading + position + action/border tail
+    if fixed >= budget || tail_start <= start {
+        let mut lines = fit_detail(start, end, budget, width);
+        while lines.len() < budget {
+            lines.push(ScreenLine::Generated(String::new()));
+        }
+        return (lines, 0, 0, 0);
+    }
+
+    let body_start = start + 1;
+    let body_len = tail_start.saturating_sub(body_start);
+    let body_rows = budget - fixed;
+    let max_scroll = body_len.saturating_sub(body_rows);
+    let scroll = requested.min(max_scroll);
+    let visible_body = body_len.saturating_sub(scroll).min(body_rows);
+    let first = if body_len == 0 { 0 } else { scroll + 1 };
+    let last = scroll + visible_body;
+
+    let mut lines = Vec::with_capacity(budget);
+    lines.push(ScreenLine::Frame(start));
+    lines.push(ScreenLine::Generated(detail_position_line(width, first, last, body_len)));
+    lines.extend(
+        (body_start + scroll..body_start + scroll + visible_body).map(ScreenLine::Frame),
+    );
+    while lines.len() + tail_len < budget {
+        lines.push(ScreenLine::Generated(String::new()));
+    }
+    lines.extend((tail_start..end).map(ScreenLine::Frame));
+    lines.truncate(budget);
+    (lines, scroll, max_scroll, body_rows)
+}
+
 /// Materialize the terminal screen from the renderer's semantic regions.
 /// The graph scrolls; selected-item detail and the command footer remain
 /// fixed at the bottom. This is deliberately a second phase after horizontal
 /// composition: terminal width determines wrapping, then terminal height
 /// determines region allocation.
+#[cfg(test)]
 fn screen_frame(
     frame: &render::Frame,
     visible: usize,
     width: usize,
     scroll: usize,
 ) -> ScreenFrame {
+    screen_frame_mode(frame, visible, width, scroll, false, 0)
+}
+
+fn screen_frame_mode(
+    frame: &render::Frame,
+    visible: usize,
+    width: usize,
+    scroll: usize,
+    details_open: bool,
+    detail_scroll: usize,
+) -> ScreenFrame {
     if visible == 0 {
-        return ScreenFrame { lines: Vec::new(), hits: Vec::new(), graph_start: 0, graph_rows: 0 };
+        return ScreenFrame {
+            lines: Vec::new(),
+            hits: Vec::new(),
+            graph_start: 0,
+            graph_rows: 0,
+            detail_scroll: 0,
+            detail_scroll_max: 0,
+            detail_page_rows: 0,
+        };
     }
 
     let graph_end = frame.graph_end.min(frame.lines.len());
@@ -1351,12 +1553,28 @@ fn screen_frame(
     let footer_start = frame.lines.len().saturating_sub(footer_take);
     let remaining = visible.saturating_sub(footer_take);
 
-    let graph_reserve = graph_end.min(MIN_GRAPH_ROWS).min(remaining);
     let detail_len = detail_end.saturating_sub(graph_end);
-    let detail_budget = remaining.saturating_sub(graph_reserve);
-    let detail_take = detail_len.min(detail_budget);
-    let graph_rows = remaining.saturating_sub(detail_take);
-    let graph_start = viewport_start(graph_end, graph_rows, frame.sel_line, scroll);
+    let (graph_rows, detail_take) = if details_open {
+        // Focus mode makes one deliberate, terminal-sized transition. Its
+        // boundary is independent of content length and selection.
+        let min_detail = 5.min(remaining);
+        let graph_rows = graph_end.min(remaining.saturating_sub(min_detail));
+        (graph_rows, remaining.saturating_sub(graph_rows))
+    } else {
+        let graph_reserve = graph_end.min(MIN_GRAPH_ROWS).min(remaining);
+        let detail_budget = remaining.saturating_sub(graph_reserve);
+        let detail_take = detail_len.min(detail_budget);
+        (remaining.saturating_sub(detail_take), detail_take)
+    };
+    let graph_start = if details_open {
+        // The causal lens is the final six graph rows. On very short panes,
+        // sacrifice the run heading/spacer before sacrificing either side of
+        // the selected node; the user opened this mode to see inputs *and*
+        // outputs together.
+        graph_end.saturating_sub(graph_rows)
+    } else {
+        viewport_start(graph_end, graph_rows, frame.sel_line, scroll)
+    };
 
     let mut planned = Vec::with_capacity(visible);
     planned.extend(
@@ -1367,7 +1585,12 @@ fn screen_frame(
     while planned.len() < graph_rows {
         planned.push(ScreenLine::Generated(String::new()));
     }
-    planned.extend(fit_detail(graph_end, detail_end, detail_take, width));
+    let (detail_lines, detail_scroll, detail_scroll_max, detail_page_rows) = if details_open {
+        scroll_detail(frame, graph_end, detail_end, detail_take, width, detail_scroll)
+    } else {
+        (fit_detail(graph_end, detail_end, detail_take, width), 0, 0, 0)
+    };
+    planned.extend(detail_lines);
     planned.extend((footer_start..frame.lines.len()).map(ScreenLine::Frame));
 
     let mut source_to_screen = vec![None; frame.lines.len()];
@@ -1394,7 +1617,15 @@ fn screen_frame(
             ScreenLine::Generated(line) => line,
         })
         .collect();
-    ScreenFrame { lines, hits, graph_start, graph_rows }
+    ScreenFrame {
+        lines,
+        hits,
+        graph_start,
+        graph_rows,
+        detail_scroll,
+        detail_scroll_max,
+        detail_page_rows,
+    }
 }
 
 fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
@@ -1428,7 +1659,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
             app.loaded.chip.as_deref(),
             &app.view_opts(),
         );
-        render::compose(
+        render::compose_with_inspector(
             &render::FrameInput {
                 doc: &app.loaded.doc,
                 scene: &scene,
@@ -1442,15 +1673,31 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
                 messages: &app.loaded.message_summaries,
             },
             w,
+            if app.details_open {
+                render::InspectorMode::Focus
+            } else {
+                render::InspectorMode::Compact
+            },
         )
     };
     let visible = h.saturating_sub(1);
     let layout_scroll = if app.help { 0 } else { app.scroll };
-    let screen = screen_frame(&frame, visible, w, layout_scroll);
+    let layout_details = main_view && app.details_open;
+    let screen = screen_frame_mode(
+        &frame,
+        visible,
+        w,
+        layout_scroll,
+        layout_details,
+        app.detail_scroll,
+    );
     app.hits = screen.hits;
     app.view_rows = visible;
     app.page_rows = screen.graph_rows;
-    if main_view {
+    app.detail_scroll = screen.detail_scroll;
+    app.detail_scroll_max = screen.detail_scroll_max;
+    app.detail_page_rows = screen.detail_page_rows;
+    if main_view && !app.details_open {
         app.scroll = screen.graph_start;
     }
     app.frame = screen.lines;
@@ -1551,6 +1798,10 @@ mod tests {
             hits: Vec::new(),
             view_rows: 0,
             page_rows: 0,
+            details_open: false,
+            detail_scroll: 0,
+            detail_scroll_max: 0,
+            detail_page_rows: 0,
             frame: Vec::new(),
             sel: None,
             painted: Vec::new(),
@@ -1760,11 +2011,116 @@ mod tests {
         )
     }
 
+    fn composed_with(
+        doc: &Doc,
+        selected: &str,
+        width: usize,
+        inspector: render::InspectorMode,
+    ) -> render::Frame {
+        let scene = model::build(
+            doc,
+            Some(selected),
+            None,
+            None,
+            &model::ViewOpts::default(),
+        );
+        render::compose_with_inspector(
+            &render::FrameInput {
+                doc,
+                scene: &scene,
+                selected: Some(selected),
+                banner: None,
+                flash: None,
+                stale_min: None,
+                watching: false,
+                herdr: None,
+                prompt: None,
+                messages: &[],
+            },
+            width,
+            inspector,
+        )
+    }
+
     #[test]
     fn viewport_follows_selection_inside_the_graph_region() {
         assert_eq!(viewport_start(32, 23, Some(3), 0), 0);
         assert_eq!(viewport_start(10, 23, Some(3), 0), 0);
         assert_eq!(viewport_start(32, 23, Some(30), 0), 8);
+    }
+
+    #[test]
+    fn compact_inspector_keeps_selection_geometry_constant() {
+        let short = tall_doc(None);
+        let long = tall_doc(Some("criterion ".repeat(120)));
+        let short = composed_with(&short, "T20", 72, render::InspectorMode::Compact);
+        let long = composed_with(&long, "T20", 72, render::InspectorMode::Compact);
+        assert_eq!(short.detail_end - short.graph_end, 3);
+        assert_eq!(long.detail_end - long.graph_end, 3);
+
+        let short_screen = screen_frame_mode(&short, 20, 72, 0, false, 0);
+        let long_screen = screen_frame_mode(&long, 20, 72, 0, false, 0);
+        assert_eq!(short_screen.graph_rows, long_screen.graph_rows);
+        assert_eq!(short_screen.graph_rows, 15, "20 rows - 3 inspector - 2 footer");
+        assert_eq!(short_screen.lines.len(), 20);
+        assert_eq!(long_screen.lines.len(), 20);
+        assert!(
+            long_screen
+                .lines
+                .last()
+                .is_some_and(|line| select::plain(line).contains("d details"))
+        );
+    }
+
+    #[test]
+    fn focus_details_keep_a_fixed_lens_and_scroll_only_the_body() {
+        let mut long = tall_doc(Some("criterion ".repeat(120)));
+        let tasks = long.tasks.as_mut().expect("fixture tasks");
+        tasks[20].deps = vec!["T19".into()];
+        tasks[21].deps = vec!["T20".into()];
+        let logical = composed_with(&long, "T20", 72, render::InspectorMode::Focus);
+        let top = screen_frame_mode(&logical, 20, 72, 0, true, 0);
+        let bottom = screen_frame_mode(&logical, 20, 72, 0, true, usize::MAX);
+        assert_eq!(top.graph_rows, bottom.graph_rows);
+        assert_eq!(top.graph_rows, logical.graph_end, "the six-row lens and run header fit");
+        assert!(top.detail_scroll_max > 0, "long detail must be independently scrollable");
+        assert_eq!(bottom.detail_scroll, bottom.detail_scroll_max);
+        assert!(bottom.detail_scroll > top.detail_scroll);
+
+        let top_plain = top.lines.iter().map(|line| select::plain(line)).collect::<Vec<_>>();
+        let bottom_plain = bottom.lines.iter().map(|line| select::plain(line)).collect::<Vec<_>>();
+        assert_eq!(
+            &top_plain[..top.graph_rows],
+            &bottom_plain[..bottom.graph_rows],
+            "scrolling details must not move or repaint the graph lens"
+        );
+        for screen in [&top_plain, &bottom_plain] {
+            assert!(screen.iter().any(|line| line.contains("focus") && line.contains("T20")));
+            assert!(screen.iter().any(|line| line.contains("details ")));
+            assert!(screen.iter().any(|line| line.contains("[m] message orchestrator")));
+            assert!(screen.iter().any(|line| line.ends_with('┘')));
+        }
+
+        let short = tall_doc(None);
+        let short = composed_with(&short, "T20", 72, render::InspectorMode::Focus);
+        let short = screen_frame_mode(&short, 20, 72, 0, true, 0);
+        assert_eq!(short.graph_rows, top.graph_rows, "detail length cannot move the boundary");
+
+        let tiny = screen_frame_mode(&logical, 13, 40, 0, true, 0);
+        let tiny_plain = tiny.lines.iter().map(|line| select::plain(line)).collect::<Vec<_>>();
+        assert!(tiny_plain.iter().any(|line| line.contains("inputs") && line.contains("T19")));
+        assert!(tiny_plain.iter().any(|line| line.contains("focus") && line.contains("T20")));
+        assert!(tiny_plain.iter().any(|line| line.contains("unlocks") && line.contains("T21")));
+
+        let mut app = message_test_app();
+        app.loaded.doc = long;
+        app.selected = Some("T20".into());
+        app.scroll = 17;
+        app.toggle_details();
+        assert!(app.details_open);
+        app.toggle_details();
+        assert_eq!(app.selected.as_deref(), Some("T20"));
+        assert_eq!(app.scroll, 17, "closing details restores the exact graph context");
     }
 
     #[test]

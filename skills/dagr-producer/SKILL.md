@@ -65,9 +65,9 @@ workflow gets its own run file and its own pane.
 ## Object model in one breath
 
 - **Project** = the recursive visual scope. The run is the implicit root;
-  `projects[]` may have `parent`. A phase or workstream is just a project,
-  not another entity. Each task has one optional `project` home, while its
-  dependency edges may cross any project boundary.
+  a subproject is simply a project with `parent`. A phase or workstream is
+  also just a project, not another entity. Each task has one optional
+  `project` home, while its dependency edges may cross any project boundary.
 - **Task** = the work item. Stable `id` you choose (never a pane id).
   `kind` is an open set — `impl · review · test · gate · question · docs ·
   ship · …` — pick the honest one (`question` for a task that exists to be
@@ -165,7 +165,7 @@ available (or a stable Herdr agent target otherwise). This is where `m`
 queues operator messages; do not point it at a worker. No user onboarding
 step or extra controller is required.
 
-### Shape projects before tasks
+### Shape projects and subprojects before tasks
 
 Use the smallest hierarchy that provides honest visual homes. Do not create
 separate `phases` or `workstreams` arrays:
