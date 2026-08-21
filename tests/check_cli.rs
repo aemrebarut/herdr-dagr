@@ -941,14 +941,14 @@ fn deep_scope_milestones_keep_the_join_and_useful_identity() {
     let (_, tiny) = run_snapshot(&compact_doc, &["--width", "20"]);
     let plain = strip_ansi(&tiny);
     let gate = plain.lines().find(|line| line.contains("◎ GATE")).expect("gate row");
-    assert!(plain.lines().any(|line| line.contains("▾ P9")), "deep project identity survives:\n{plain}");
+    assert!(plain.lines().any(|line| line.contains("▾ ○ P9")), "deep project node and identity survive:\n{plain}");
     assert!(gate.contains("7→1 ◎ GATE"), "join and useful id prefix survive:\n{gate}");
 
     let full_doc = in_nested_project(&seven_lane_join_doc_at_depth(1, "GATE-LONG"), 30);
     let (_, full) = run_snapshot(&full_doc, &["--width", "96"]);
     let plain = strip_ansi(&full);
     let gate = plain.lines().find(|line| line.contains("◎ GATE")).expect("gate row");
-    assert!(plain.lines().any(|line| line.contains("▾ P29")), "deep project identity survives:\n{plain}");
+    assert!(plain.lines().any(|line| line.contains("▾ ○ P29")), "deep project node and identity survive:\n{plain}");
     assert!(
         gate.contains("○7→◎ GATE-LONG"),
         "counted join and useful id survive the deep full layout:\n{gate}"

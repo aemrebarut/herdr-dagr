@@ -178,20 +178,26 @@ fn head_min_width(row: &Row, name_prefix: usize) -> usize {
         + base
 }
 
-/// Recursive projects are visual containers, not fake tasks. One quiet
-/// heading and a hairline communicate scope without adding another tree
-/// node or competing with the task-state glyph grammar.
+/// Recursive projects are structural scope nodes, not task records. Keep the
+/// fold caret outside the graph; the aggregate-state node then occupies the
+/// exact column from which the project's direct child rails descend.
 fn project_line(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, usize)>) {
     let mut l = Line::new(w);
     let status_w = seg_width(&row.status).min(30);
-    let min_head = 2 + row.name.width().min(8); // ▾ + gap + useful id
-    let show_status = status_w > 0 && w > 1 + min_head + 2 + status_w;
+    let min_head = 4 + row.name.width().min(8); // ▾ + gap + state node + gap + useful id
+    let show_status =
+        status_w > 0 && w > 1 + row.rail.width() + min_head + 2 + status_w;
     let status_x = if show_status { w.saturating_sub(status_w + 1) } else { w };
     let max_rail = status_x.saturating_sub(2).saturating_sub(min_head);
     let rail = fit_rail(&row.rail, max_rail);
     let mut x = l.put(1, &rail, Style::fg(style::EDGE));
     let fold_x = x;
     x = l.put(x, &format!("{} ", row.glyph), Style::bold(row.glyph_color));
+    x = l.put(
+        x,
+        &format!("{} ", style::state_glyph(&row.state)),
+        Style::bold(style::state_color(&row.state)),
+    );
     x = l.put(
         x,
         &trunc(&row.name, status_x.saturating_sub(x)),
@@ -1143,6 +1149,60 @@ mod tests {
         );
         let scene = model::build(doc, None, None, None, &model::ViewOpts::default());
         (f, scene)
+    }
+
+    #[test]
+    fn project_state_nodes_connect_to_direct_child_rails() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "project-rails"},
+            "projects": [
+                {"id": "ROOT", "title": "Root"},
+                {"id": "CHILD", "title": "Child", "parent": "ROOT"}
+            ],
+            "tasks": [
+                {"id": "ROOT-TASK", "title": "root task", "kind": "impl",
+                 "project": "ROOT", "owner": "dev", "state": "queued",
+                 "deps": [], "attempts": []},
+                {"id": "CHILD-TASK", "title": "child task", "kind": "impl",
+                 "project": "CHILD", "owner": "dev", "state": "queued",
+                 "deps": [], "attempts": []}
+            ]
+        }))
+        .unwrap();
+        let scene = model::build(&doc, None, None, None, &model::ViewOpts::default());
+        let plain = |key: &str, width: usize| {
+            let row = scene.rows.iter().find(|row| row.key == key).unwrap();
+            crate::select::plain(&compact_row(row, width, false).0)
+        };
+
+        for width in [20, 78] {
+            let root = plain("project:ROOT", width);
+            let root_task = plain("ROOT-TASK", width);
+            let child = plain("project:CHILD", width);
+            let child_task = plain("CHILD-TASK", width);
+            assert!(root.contains("▾ ○ ROOT"), "width={width}: {root:?}");
+            assert!(child.contains("▾ ○ CHILD"), "width={width}: {child:?}");
+
+            let column = |line: &str, mark: char| {
+                line.chars().position(|c| c == mark).unwrap()
+            };
+            assert_eq!(
+                column(&root, '○'),
+                column(&root_task, '╰'),
+                "width={width}: root scope node must feed its task rail"
+            );
+            assert_eq!(
+                column(&root, '○'),
+                column(&child, '▾'),
+                "width={width}: a child project's fold control stays on the parent rail"
+            );
+            assert_eq!(
+                column(&child, '○'),
+                column(&child_task, '╰'),
+                "width={width}: nested scope node must feed its task rail"
+            );
+        }
     }
 
     #[test]

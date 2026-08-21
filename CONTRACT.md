@@ -49,7 +49,9 @@ dependency edges cross project boundaries visibly.
 Project hierarchy answers “where is this shown?”; task dependencies answer
 “what does this block?”. They are deliberately orthogonal. A cross-project
 dependency is rendered as an off-tree `⇠` edge, not as false visual
-containment. Project headings summarize attention in their descendants.
+containment. Project rows carry an aggregate-state node aligned with the rail
+into their children, and summarize attention in their descendants. The
+adjacent fold caret is a scope control, not a task-state glyph.
 
 ### 1. Task — the work item
 

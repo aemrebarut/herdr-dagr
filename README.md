@@ -68,8 +68,9 @@ on, or what a retry loop is about to spawn. And when an agent says
 
 - **Shows the whole run at a glance.** Every task, attempt, gate, and
   loop, one line per attempt, drawn like `git log --graph`.
-- **Keeps large programs legible.** Recursive projects provide one honest
-  visual home for each task; dependencies remain free to cross projects.
+- **Keeps large programs legible.** Recursive project rows pair a fold caret
+  with an aggregate-state node aligned to their child rail, while dependencies
+  remain free to cross projects.
 - **Shows what can move next.** Queued rows derive `waits ID`, `ready`,
   `unassigned`, or `needs answer` from ordinary task facts; canceled work
   stays visible without blocking the rest of the view.
@@ -155,8 +156,8 @@ Gate rows carry state-bearing joins (`●◎●→⋈ G2`) in declared input ord
 narrow panes collapse them to counts and then `N→1`. A gate is a project
 milestone, never a child of whichever input ran last. Moving the cursor
 reveals exact input ids and highlights the edges that justify the selected
-row. Projects recurse; a cross-project dependency stays visible as `⇠` ink
-without duplicating the task.
+row. Projects recurse through foldable aggregate-state nodes; a cross-project
+dependency stays visible as `⇠` ink without duplicating the task.
 
 If a terminal font renders `◎` unevenly, set `DAGR_WORKING_GLYPH=*` for the
 single-cell ASCII working mark.
