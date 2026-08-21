@@ -171,9 +171,11 @@ at full width below the graph:
   compact attention queue right. lazygit's grammar.
 - **Below that**: full-width trace. tig's grammar.
 
-At either width, cursor movement updates exactly three lines without moving the
-graph: identity/state, the most useful operational signal, then actor/timing and
-`model·thinking`. Press `d` for a focus-plus-context view of the selected node's
+At either width, cursor movement updates a fixed framed inspector without
+moving the graph: a continuous top edge; identity/state and the most useful
+operational signal; project, input, and output context; then actor/timing and
+`model·thinking` embedded in the bottom border.
+Press `d` for a focus-plus-context view of the selected node's
 direct inputs and outputs; the complete detail body scrolls independently below
 it. Press `d` or `esc` to return to the exact graph position.
 
