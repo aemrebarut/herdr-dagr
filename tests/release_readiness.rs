@@ -11,7 +11,8 @@ fn repo_file(path: &str) -> String {
 fn package_plugin_contract_and_binary_versions_are_0_3() {
     assert!(repo_file("Cargo.toml").contains("version = \"0.3.0\""));
     assert!(repo_file("herdr-plugin.toml").contains("version = \"0.3.0\""));
-    assert!(repo_file("Cargo.lock").contains("name = \"dagr\"\nversion = \"0.3.0\""));
+    let cargo_lock = repo_file("Cargo.lock").replace("\r\n", "\n");
+    assert!(cargo_lock.contains("name = \"dagr\"\nversion = \"0.3.0\""));
     assert!(repo_file("CONTRACT.md").starts_with("# The dagr run-state contract — v3"));
 
     let output = Command::new(env!("CARGO_BIN_EXE_dagr"))
