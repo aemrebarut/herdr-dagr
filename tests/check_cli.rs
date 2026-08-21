@@ -50,7 +50,7 @@ fn version_reports_the_current_contract_and_compatibility() {
         .expect("dagr runs");
     assert!(out.status.success());
     let version = String::from_utf8_lossy(&out.stdout);
-    assert!(version.contains("dagr 0.3.0 (contract v3; reads v1/v2)"), "{version}");
+    assert!(version.contains("dagr 0.3.1 (contract v3; reads v1/v2)"), "{version}");
 }
 
 /// A minimal valid document: one done task, one verified attempt.

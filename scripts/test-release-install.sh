@@ -11,7 +11,7 @@ safe_path="$work/path"
 mkdir -p "$source_tree/scripts" "$assets" "$install_dir" "$safe_path"
 
 cp "$root/scripts/install.sh" "$source_tree/scripts/install.sh"
-printf '%s\n' 'version = "0.3.0"' > "$source_tree/herdr-plugin.toml"
+printf '%s\n' 'version = "0.3.1"' > "$source_tree/herdr-plugin.toml"
 printf '%s\n' \
   '#!/usr/bin/env bash' \
   'set -eu' \
@@ -36,7 +36,7 @@ esac
 
 payload="$work/payload"
 mkdir -p "$payload"
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "dagr fixture 0.3.0"' > "$payload/dagr"
+printf '%s\n' '#!/bin/sh' 'printf "%s\n" "dagr fixture 0.3.1"' > "$payload/dagr"
 chmod +x "$payload/dagr"
 archive="dagr-$target.tar.gz"
 checksum="dagr-$target.sha256"
@@ -65,7 +65,7 @@ PATH="$safe_path" \
   DAGR_RELEASE_BASE="file://$assets" \
   DAGR_INSTALL_BIN_DIR="$install_dir" \
   "$safe_path/bash" "$source_tree/scripts/install.sh"
-test "$("$install_dir/dagr")" = 'dagr fixture 0.3.0'
+test "$("$install_dir/dagr")" = 'dagr fixture 0.3.1'
 
 printf '%064d  %s\n' 0 "$archive" > "$assets/$checksum"
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" preserved-old' > "$install_dir/dagr"

@@ -170,12 +170,16 @@ struct App {
     /// In-flight focus result (focus runs off-thread; even a bounded CLI
     /// wait has no business freezing the render loop).
     bg_rx: Option<std::sync::mpsc::Receiver<String>>,
-    /// Clickable regions of the last drawn frame, plus the viewport the
-    /// frame was drawn through — a click is (column, terminal row) and
-    /// only means something relative to that exact draw.
+    /// Clickable regions of the last drawn screen. The renderer emits hits
+    /// in logical-frame coordinates; the vertical layout remaps them after
+    /// it docks detail and footer regions.
     hits: Vec<render::Hit>,
-    view_start: usize,
+    /// Rows available to pointer interaction (the terminal's reserved
+    /// search row is excluded).
     view_rows: usize,
+    /// Height of the scrollable graph region. Page navigation must use the
+    /// master pane, not count the fixed detail dock and footer as rows.
+    page_rows: usize,
     /// The painted lines of the last draw, kept so a copy returns exactly
     /// what was on screen.
     frame: Vec<String>,
@@ -597,7 +601,7 @@ impl App {
         if row >= self.view_rows {
             return;
         }
-        let line = self.view_start + row;
+        let line = row;
         let target = self
             .hits
             .iter()
@@ -941,8 +945,8 @@ fn interactive(args: &ViewArgs) -> Result<(), String> {
         mode: Mode::Normal,
         bg_rx: None,
         hits: Vec::new(),
-        view_start: 0,
         view_rows: 0,
+        page_rows: 0,
         frame: Vec::new(),
         sel: None,
         painted: Vec::new(),
@@ -1036,8 +1040,8 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         }
                         // In normal mode ctrl-u pages; the composer handles
                         // the same chord earlier as clear-line.
-                        Char('d') if ctrl => app.move_sel((app.view_rows / 2).max(1) as i64),
-                        Char('u') if ctrl => app.move_sel(-((app.view_rows / 2).max(1) as i64)),
+                        Char('d') if ctrl => app.move_sel((app.page_rows / 2).max(1) as i64),
+                        Char('u') if ctrl => app.move_sel(-((app.page_rows / 2).max(1) as i64)),
                         Char('j') | Down => app.move_sel(1),
                         Char('k') | Up => app.move_sel(-1),
                         Char('g') => {
@@ -1122,11 +1126,11 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                         // mode. The mouse cannot submit the composer.
                         MouseEventKind::Down(MouseButton::Left) => {
                             app.sel = (row < app.view_rows)
-                                .then(|| select::Sel::new(app.view_start + row, col));
+                                .then(|| select::Sel::new(row, col));
                         }
                         MouseEventKind::Drag(MouseButton::Left) => {
                             if let Some(sel) = app.sel.as_mut() {
-                                sel.to(app.view_start + row.min(app.view_rows.saturating_sub(1)), col);
+                                sel.to(row.min(app.view_rows.saturating_sub(1)), col);
                             }
                         }
                         MouseEventKind::Up(MouseButton::Left) => {
@@ -1152,7 +1156,7 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
                                     // two clicks on the same line inside
                                     // 450ms zoom the row (a folded one
                                     // opens instead) — same as →
-                                    let line = app.view_start + row;
+                                    let line = row;
                                     let now = std::time::Instant::now();
                                     let double = app.last_click.take().is_some_and(|(t, l)| {
                                         l == line
@@ -1230,19 +1234,15 @@ fn event_loop(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String>
     }
 }
 
-/// Viewport start for a frame. Normal mode scrolls the minimum needed
-/// to keep the selected row on screen; while the composer is open the
-/// frame tail is pinned so its complete prompt stays visible.
+/// Viewport start inside one independently scrollable region. The caller
+/// passes the graph's length, not the length of the entire composed frame:
+/// detail and footer rows are docks, not scrollback.
 fn viewport_start(
     frame_len: usize,
     visible: usize,
     sel_line: Option<usize>,
     scroll: usize,
-    modal: bool,
 ) -> usize {
-    if modal {
-        return frame_len.saturating_sub(visible);
-    }
     let mut s = scroll;
     if let (Some(sel), true) = (sel_line, visible > 0) {
         if sel < s {
@@ -1254,19 +1254,171 @@ fn viewport_start(
     if frame_len > visible { s.min(frame_len - visible) } else { 0 }
 }
 
+const MIN_GRAPH_ROWS: usize = 3;
+
+enum ScreenLine {
+    Frame(usize),
+    Generated(String),
+}
+
+struct ScreenFrame {
+    lines: Vec<String>,
+    hits: Vec<render::Hit>,
+    graph_start: usize,
+    graph_rows: usize,
+}
+
+/// When a producer-controlled detail value is taller than the terminal can
+/// physically display, preserve the card heading and tail and make the
+/// omission explicit. Ordinary cards are never shortened: this path is only
+/// reached after the dock has claimed every row except a small graph context
+/// and the fixed footer.
+fn detail_omission_line(width: usize, hidden: usize) -> String {
+    let cw = width.saturating_sub(1);
+    if cw < 8 {
+        return style::paint("…", style::Style::dim(style::MUTED));
+    }
+    let mut line = style::Line::new(cw);
+    line.put(0, "│ ", style::Style::fg(style::RULE));
+    let unit = if hidden == 1 { "row" } else { "rows" };
+    line.put(
+        2,
+        &format!("… {hidden} more detail {unit} · enlarge pane to reveal"),
+        style::Style::dim(style::MUTED),
+    );
+    line.put(cw.saturating_sub(2), " │", style::Style::fg(style::RULE));
+    line.render(None, true)
+}
+
+fn fit_detail(
+    start: usize,
+    end: usize,
+    budget: usize,
+    width: usize,
+) -> Vec<ScreenLine> {
+    let all: Vec<usize> = (start..end).collect();
+    if all.len() <= budget {
+        return all.into_iter().map(ScreenLine::Frame).collect();
+    }
+    if budget == 0 {
+        return Vec::new();
+    }
+
+    // compose() prefixes a real selection card with one breathing row. If
+    // the dock is constrained, spend the row on information instead.
+    let card = if all.len() > 1 { &all[1..] } else { &all[..] };
+    match budget {
+        1 => vec![ScreenLine::Frame(card[0])],
+        2 => vec![ScreenLine::Frame(card[0]), ScreenLine::Frame(*card.last().unwrap())],
+        _ => {
+            let tail_n = if budget >= 4 { 2 } else { 1 };
+            let head_n = budget.saturating_sub(tail_n + 1).max(1);
+            let head_n = head_n.min(card.len().saturating_sub(tail_n));
+            let tail_start = card.len().saturating_sub(tail_n).max(head_n);
+            let mut planned = card[..head_n]
+                .iter()
+                .copied()
+                .map(ScreenLine::Frame)
+                .collect::<Vec<_>>();
+            let hidden = tail_start.saturating_sub(head_n);
+            planned.push(ScreenLine::Generated(detail_omission_line(width, hidden)));
+            planned.extend(card[tail_start..].iter().copied().map(ScreenLine::Frame));
+            planned.truncate(budget);
+            planned
+        }
+    }
+}
+
+/// Materialize the terminal screen from the renderer's semantic regions.
+/// The graph scrolls; selected-item detail and the command footer remain
+/// fixed at the bottom. This is deliberately a second phase after horizontal
+/// composition: terminal width determines wrapping, then terminal height
+/// determines region allocation.
+fn screen_frame(
+    frame: &render::Frame,
+    visible: usize,
+    width: usize,
+    scroll: usize,
+) -> ScreenFrame {
+    if visible == 0 {
+        return ScreenFrame { lines: Vec::new(), hits: Vec::new(), graph_start: 0, graph_rows: 0 };
+    }
+
+    let graph_end = frame.graph_end.min(frame.lines.len());
+    let detail_end = frame.detail_end.clamp(graph_end, frame.lines.len());
+    let footer_len = frame.lines.len().saturating_sub(detail_end);
+    let footer_take = footer_len.min(visible);
+    let footer_start = frame.lines.len().saturating_sub(footer_take);
+    let remaining = visible.saturating_sub(footer_take);
+
+    let graph_reserve = graph_end.min(MIN_GRAPH_ROWS).min(remaining);
+    let detail_len = detail_end.saturating_sub(graph_end);
+    let detail_budget = remaining.saturating_sub(graph_reserve);
+    let detail_take = detail_len.min(detail_budget);
+    let graph_rows = remaining.saturating_sub(detail_take);
+    let graph_start = viewport_start(graph_end, graph_rows, frame.sel_line, scroll);
+
+    let mut planned = Vec::with_capacity(visible);
+    planned.extend(
+        (graph_start..graph_end)
+            .take(graph_rows)
+            .map(ScreenLine::Frame),
+    );
+    while planned.len() < graph_rows {
+        planned.push(ScreenLine::Generated(String::new()));
+    }
+    planned.extend(fit_detail(graph_end, detail_end, detail_take, width));
+    planned.extend((footer_start..frame.lines.len()).map(ScreenLine::Frame));
+
+    let mut source_to_screen = vec![None; frame.lines.len()];
+    for (screen_line, source) in planned.iter().enumerate() {
+        let ScreenLine::Frame(source_line) = source else { continue };
+        if let Some(slot) = source_to_screen.get_mut(*source_line) {
+            *slot = Some(screen_line);
+        }
+    }
+    let hits = frame
+        .hits
+        .iter()
+        .filter_map(|hit| {
+            let screen_line = source_to_screen.get(hit.line).copied().flatten()?;
+            let mut hit = hit.clone();
+            hit.line = screen_line;
+            Some(hit)
+        })
+        .collect();
+    let lines = planned
+        .into_iter()
+        .map(|line| match line {
+            ScreenLine::Frame(i) => frame.lines.get(i).cloned().unwrap_or_default(),
+            ScreenLine::Generated(line) => line,
+        })
+        .collect();
+    ScreenFrame { lines, hits, graph_start, graph_rows }
+}
+
 fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     let (w, h) = terminal::size().map_err(|e| e.to_string())?;
     let (w, h) = ((w as usize).min(crate::scale::MAX_FRAME_WIDTH), h as usize);
-    // The composer pins its complete prompt block; picker and search have
-    // their own layouts.
-    let modal = matches!(app.mode, Mode::Message { .. });
-    let (lines, sel_line, prompt_line) = if app.help {
-        app.hits = Vec::new();
-        (render::help_lines(), None, None)
+    let main_view = !app.help && !matches!(app.mode, Mode::Picker(_));
+    let frame = if app.help {
+        let lines = render::help_lines();
+        render::Frame {
+            graph_end: lines.len(),
+            detail_end: lines.len(),
+            lines,
+            sel_line: None,
+            hits: Vec::new(),
+        }
     } else if let Mode::Picker(st) = &app.mode {
-        app.hits = Vec::new();
         let (lines, sel) = picker::lines(st, w);
-        (lines, sel, None)
+        render::Frame {
+            graph_end: lines.len(),
+            detail_end: lines.len(),
+            lines,
+            sel_line: sel,
+            hits: Vec::new(),
+        }
     } else {
         let hints = app.hints();
         let scene = model::build(
@@ -1276,7 +1428,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
             app.loaded.chip.as_deref(),
             &app.view_opts(),
         );
-        let frame = render::compose(
+        render::compose(
             &render::FrameInput {
                 doc: &app.loaded.doc,
                 scene: &scene,
@@ -1290,21 +1442,18 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
                 messages: &app.loaded.message_summaries,
             },
             w,
-        );
-        app.hits = frame.hits;
-        (frame.lines, frame.sel_line, frame.prompt_line)
+        )
     };
     let visible = h.saturating_sub(1);
-    let start = viewport_start(lines.len(), visible, sel_line, app.scroll, modal);
-    app.view_start = start;
+    let layout_scroll = if app.help { 0 } else { app.scroll };
+    let screen = screen_frame(&frame, visible, w, layout_scroll);
+    app.hits = screen.hits;
     app.view_rows = visible;
-    if !modal {
-        // the modal tail-pin is transient; the browsing scroll position
-        // survives the modal and is restored on cancel
-        app.scroll = start;
+    app.page_rows = screen.graph_rows;
+    if main_view {
+        app.scroll = screen.graph_start;
     }
-    let _ = prompt_line;
-    app.frame = lines;
+    app.frame = screen.lines;
     // Paint into ONE buffer and write it in ONE syscall. The old path
     // flushed a full-screen Clear on its own and then flushed again per
     // line, so the terminal had a genuinely blank screen to draw between
@@ -1313,7 +1462,7 @@ fn draw(app: &mut App, stdout: &mut std::io::Stdout) -> Result<(), String> {
     // that draws the new one.
     let mut buf: Vec<u8> = Vec::with_capacity(w * visible.max(1) + 64);
     let mut drawn = 0usize;
-    for (i, idx) in (start..app.frame.len()).take(visible.max(1)).enumerate() {
+    for (i, idx) in (0..app.frame.len()).take(visible.max(1)).enumerate() {
         let line = &app.frame[idx];
         queue!(buf, cursor::MoveTo(0, i as u16)).map_err(|e| e.to_string())?;
         match app.sel.and_then(|s| s.cols_on(idx, w)) {
@@ -1400,8 +1549,8 @@ mod tests {
             mode: Mode::Normal,
             bg_rx: None,
             hits: Vec::new(),
-            view_start: 0,
             view_rows: 0,
+            page_rows: 0,
             frame: Vec::new(),
             sel: None,
             painted: Vec::new(),
@@ -1563,11 +1712,140 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    fn tall_doc(criteria: Option<String>) -> Doc {
+        let tasks = (0..40)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("T{i:02}"),
+                    "title": format!("task {i:02}"),
+                    "kind": "impl",
+                    "owner": "developer",
+                    "state": "queued",
+                    "deps": [],
+                    "criteria": (i == 20).then(|| criteria.clone()).flatten(),
+                    "attempts": []
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({
+            "dagr": 3,
+            "run": {"id": "tall"},
+            "tasks": tasks
+        }))
+        .unwrap()
+    }
+
+    fn composed(doc: &Doc, selected: &str, width: usize, prompt: Option<String>) -> render::Frame {
+        let scene = model::build(
+            doc,
+            Some(selected),
+            None,
+            None,
+            &model::ViewOpts::default(),
+        );
+        render::compose(
+            &render::FrameInput {
+                doc,
+                scene: &scene,
+                selected: Some(selected),
+                banner: None,
+                flash: None,
+                stale_min: None,
+                watching: false,
+                herdr: None,
+                prompt,
+                messages: &[],
+            },
+            width,
+        )
+    }
+
     #[test]
-    fn viewport_pins_the_complete_composer() {
-        assert_eq!(viewport_start(32, 23, Some(3), 0, false), 0, "normal: follow selection");
-        assert_eq!(viewport_start(32, 23, Some(3), 0, true), 9, "composer: tail on screen");
-        assert_eq!(viewport_start(10, 23, Some(3), 0, true), 0, "short frame: all visible");
-        assert_eq!(viewport_start(32, 23, Some(30), 0, false), 8, "normal: follow a deep selection");
+    fn viewport_follows_selection_inside_the_graph_region() {
+        assert_eq!(viewport_start(32, 23, Some(3), 0), 0);
+        assert_eq!(viewport_start(10, 23, Some(3), 0), 0);
+        assert_eq!(viewport_start(32, 23, Some(30), 0), 8);
+    }
+
+    #[test]
+    fn long_graph_keeps_selection_detail_and_footer_on_screen() {
+        let doc = tall_doc(None);
+        for selected in ["T00", "T20", "T39"] {
+            let logical = composed(&doc, selected, 120, None);
+            assert!(logical.graph_end > 40, "fixture must exceed the viewport");
+            let screen = screen_frame(&logical, 20, 120, 0);
+            let plain = screen
+                .lines
+                .iter()
+                .map(|line| select::plain(line))
+                .collect::<Vec<_>>();
+            assert_eq!(plain.len(), 20);
+            assert!(
+                plain.iter().any(|line| line.contains(&format!("○ {selected}"))),
+                "selected graph row disappeared for {selected}:\n{}",
+                plain.join("\n")
+            );
+            assert!(
+                plain.iter().any(|line| line.contains(&format!("─ {selected} ·"))),
+                "detail heading is not docked for {selected}:\n{}",
+                plain.join("\n")
+            );
+            assert!(plain.iter().any(|line| line.contains("[m] message orchestrator")));
+            assert!(plain.last().is_some_and(|line| line.contains("j/k")), "footer is fixed");
+
+            let message_hit = screen
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.target, render::HitTarget::Message))
+                .expect("message action remains clickable after regional layout");
+            assert!(plain[message_hit.line].contains("[m] message"));
+            let row_hit = screen
+                .hits
+                .iter()
+                .find(|hit| matches!(&hit.target, render::HitTarget::Row(key) if key == selected))
+                .expect("selected graph row remains clickable after scrolling");
+            assert!(plain[row_hit.line].contains(selected));
+        }
+    }
+
+    #[test]
+    fn constrained_height_preserves_context_actions_and_names_omitted_detail() {
+        let doc = tall_doc(Some("criterion ".repeat(120)));
+        let logical = composed(&doc, "T20", 40, None);
+        let screen = screen_frame(&logical, 12, 40, 0);
+        let plain = screen
+            .lines
+            .iter()
+            .map(|line| select::plain(line))
+            .collect::<Vec<_>>();
+        assert_eq!(plain.len(), 12);
+        assert!(plain.iter().any(|line| line.contains("○ T20")), "graph context survives");
+        assert!(
+            plain.iter().any(|line| line.contains("─ T20 ·")),
+            "card heading survives:\n{}",
+            plain.join("\n")
+        );
+        assert!(plain.iter().any(|line| line.contains("more detail rows")), "clipping is explicit");
+        assert!(plain.iter().any(|line| line.contains("[m] message orchestrator")), "action survives");
+        assert!(plain.iter().any(|line| line.ends_with('┘')), "card remains framed");
+        assert!(plain.last().is_some_and(|line| line.contains("? help")));
+    }
+
+    #[test]
+    fn composer_footer_is_fixed_without_displacing_the_selected_row() {
+        let doc = tall_doc(None);
+        let prompt = "line one\nline two\nline three".to_string();
+        let logical = composed(&doc, "T20", 72, Some(prompt));
+        let screen = screen_frame(&logical, 18, 72, 0);
+        let plain = screen
+            .lines
+            .iter()
+            .map(|line| select::plain(line))
+            .collect::<Vec<_>>();
+        assert!(plain.iter().any(|line| line.contains("○ T20")));
+        for line in ["line one", "line two", "line three"] {
+            assert!(plain.iter().any(|row| row.contains(line)), "missing prompt {line:?}");
+        }
+        assert!(plain.last().is_some_and(|line| line.contains("j/k")));
     }
 }

@@ -946,6 +946,7 @@ pub enum HitTarget {
     Message,
 }
 
+#[derive(Clone)]
 pub struct Hit {
     pub line: usize,
     pub x0: usize,
@@ -958,10 +959,14 @@ pub struct Hit {
 pub struct Frame {
     pub lines: Vec<String>,
     pub sel_line: Option<usize>,
-    /// First line of the modal prompt block, when one was composed. The
-    /// confirm gate only counts as shown if these lines were actually
-    /// inside the viewport on the last draw.
-    pub prompt_line: Option<usize>,
+    /// End of the independently scrollable graph region. Selection
+    /// details live after this boundary so the interactive view can dock
+    /// them instead of pretending the whole screen is one long document.
+    pub graph_end: usize,
+    /// End of the detail dock and start of the fixed footer. Together with
+    /// `graph_end`, this makes the frame's vertical regions explicit:
+    /// graph | selected-item detail | footer.
+    pub detail_end: usize,
     /// Clickable regions of this frame (mouse support).
     pub hits: Vec<Hit>,
 }
@@ -1092,6 +1097,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
     // A selection is explanatory content, not an attention-queue field.
     // Give it the complete frame at every breakpoint so adding terminal
     // width always reveals more criteria, receipts, and operator messages.
+    let graph_end = out.len();
     if let Some(k) = sel {
         out.push(String::new());
         // Never write the card into the terminal's final auto-wrap cell.
@@ -1113,12 +1119,11 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         // Preserve the cockpit's breathing room when nothing is selected.
         out.push(String::new());
     }
+    let detail_end = out.len();
 
     // footer: rule + (modal prompt |) key hints
     out.push(paint(&format!(" {}", "─".repeat(w.saturating_sub(2))), Style::dim(style::RULE)));
-    let mut prompt_line = None;
     if let Some(p) = &input.prompt {
-        prompt_line = Some(out.len());
         // The confirm gate's whole point is that the human inspects the
         // EXACT argv — so the prompt wraps across as many lines as it
         // needs; clipping could hide a trailing argument.
@@ -1185,7 +1190,7 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
         }
         out.push(l.render(None, false));
     }
-    Frame { lines: out, sel_line, prompt_line, hits }
+    Frame { lines: out, sel_line, graph_end, detail_end, hits }
 }
 
 pub fn help_lines() -> Vec<String> {
@@ -1543,6 +1548,16 @@ mod tests {
 
             assert!(card_start > row_line, "w={w}: detail must follow the graph");
             assert_eq!(frame.sel_line, Some(row_line), "w={w}: row remains the selection anchor");
+            assert_eq!(
+                card_start,
+                frame.graph_end + 1,
+                "w={w}: the detail dock starts after its breathing row"
+            );
+            assert_eq!(
+                frame.detail_end,
+                card_end + 1,
+                "w={w}: the footer must not leak into the detail region"
+            );
             assert!(plain[card_start].ends_with('┐'), "w={w}: right border must be present");
             for line in &plain[card_start..=card_end] {
                 assert_eq!(

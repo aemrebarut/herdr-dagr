@@ -173,7 +173,10 @@ docked at full width below the graph:
 
 At either width, cursor movement live-updates the full-width detail dock,
 including criteria, receipts, operator messages, and the provenance event tail.
-Detail fields wrap to the available columns instead of clipping their tails.
+The graph scrolls independently, so a long run cannot push that dock or the
+command footer below the terminal. Detail fields wrap to the available columns;
+on an exceptionally short pane, the dock keeps its heading and actions visible
+and explicitly counts any body rows that cannot fit.
 
 ![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
 
@@ -302,6 +305,11 @@ Cargo is required only when building from source.
   `samples/run.json` by [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py).
 
 ## Status
+
+**v0.3.1.** Long graphs now scroll inside their own vertical region;
+selected-item detail and command hints remain docked regardless of graph
+length. Mouse targets, text selection, page navigation, modal prompts, and
+extremely tall wrapped detail share the same height-aware layout.
 
 **v0.3.0.** Contract v3 makes the editable message composer the sole action
 path while v1/v2 files remain readable with legacy action data inert. Each
