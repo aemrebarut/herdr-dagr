@@ -1,7 +1,8 @@
 //! Rows → ANSI frames. Two layouts, both established terminal grammars:
-//! `sidecar` (≥ ~110 cols: trace left, attention queue + focus card right —
-//! lazygit's grammar) folding to `cockpit` (full-width trace, detail docked
-//! below — tig's grammar). Renderers are pure functions of (state, width).
+//! `sidecar` (≥ ~146 cols: trace left, attention queue right) folding to
+//! `cockpit` (full-width trace). In both, the selected item's detail is
+//! docked full-width below the graph. Renderers are pure functions of
+//! (state, width).
 
 use crate::contract::{Attempt, Doc, Task};
 use crate::model::{parse_min, GateJoin, Row, Scene, Seg};
@@ -9,11 +10,11 @@ use crate::style::{self, paint, trunc, Line, Style};
 use unicode_width::UnicodeWidthStr;
 
 /// Sidecar needs its left panel to keep the full column grammar (≥96
-/// cols beside the 48-col rail + gutter); folding earlier put the trace
+/// cols beside the 48-col attention rail + gutter); folding earlier put the trace
 /// through compact rows while a full-width cockpit would have been richer
-/// (F5's inversion band). 146 = 96 + CARD_W + 2.
+/// (F5's inversion band). 146 = 96 + QUEUE_W + 2.
 pub const FOLD_WIDTH: usize = 146;
-const CARD_W: usize = 48;
+const QUEUE_W: usize = 48;
 
 /// Put segments left-to-right, hard-stopped at `limit` columns so a long
 /// tail can never bleed into the next column (F4).
@@ -903,14 +904,12 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
     let sel = input.selected;
     let mut hits: Vec<Hit> = Vec::new();
     if w >= FOLD_WIDTH {
-        // sidecar: trace left · queue + card right
-        let right_w = CARD_W;
+        // sidecar: trace left · compact attention queue right. Selection
+        // detail is deliberately not part of this fixed-width rail: it is
+        // docked across the full frame after the graph in both layouts.
+        let right_w = QUEUE_W;
         let left_w = w - right_w - 2;
-        let mut right: Vec<String> = queue_panel(scene, right_w);
-        right.push(String::new());
-        if let Some(k) = sel {
-            right.extend(focus_card(input.doc, k, right_w, input.herdr, input.messages));
-        }
+        let right: Vec<String> = queue_panel(scene, right_w);
         let left: Vec<(String, Option<(usize, usize)>)> = scene
             .rows
             .iter()
@@ -948,16 +947,6 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
                 target: HitTarget::Task(item.task_id.clone()),
             });
         }
-        if sel.is_some() {
-            if let Some(i) = right.iter().position(|line| line.contains("[m] message")) {
-                hits.push(Hit {
-                    line: base + i,
-                    x0: left_w + 2,
-                    x1: w,
-                    target: HitTarget::Message,
-                });
-            }
-        }
         for i in 0..rows_n {
             let l = left
                 .get(i)
@@ -967,8 +956,8 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             out.push(format!("{l}  {r}"));
         }
     } else {
-        // cockpit: full-width trace, card docked below; below ~96 cols the
-        // full column layout self-destructs, so rows go compact
+        // cockpit: full-width trace; below ~96 cols the full column layout
+        // self-destructs, so rows go compact
         let base = out.len();
         if let Some(i) = sel_row {
             sel_line = Some(base + i);
@@ -989,20 +978,27 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
             }
             out.push(line);
         }
+    }
+
+    // A selection is explanatory content, not an attention-queue field.
+    // Give it the complete frame at every breakpoint so adding terminal
+    // width always reveals more criteria, receipts, and operator messages.
+    if let Some(k) = sel {
         out.push(String::new());
-        if let Some(k) = sel {
-            let card = focus_card(input.doc, k, w.min(96), input.herdr, input.messages);
-            let card_start = out.len();
-            if let Some(i) = card.iter().position(|line| line.contains("[m] message")) {
-                hits.push(Hit {
-                    line: card_start + i,
-                    x0: 0,
-                    x1: w,
-                    target: HitTarget::Message,
-                });
-            }
-            out.extend(card);
+        let card = focus_card(input.doc, k, w, input.herdr, input.messages);
+        let card_start = out.len();
+        if let Some(i) = card.iter().position(|line| line.contains("[m] message")) {
+            hits.push(Hit {
+                line: card_start + i,
+                x0: 0,
+                x1: w,
+                target: HitTarget::Message,
+            });
         }
+        out.extend(card);
+    } else if w < FOLD_WIDTH {
+        // Preserve the cockpit's breathing room when nothing is selected.
+        out.push(String::new());
     }
 
     // footer: rule + (modal prompt |) key hints
@@ -1351,6 +1347,89 @@ mod tests {
                 frame.hits.iter().any(|h| matches!(h.target, HitTarget::Message)),
                 "w={w}: focus-card message action must be clickable"
             );
+        }
+    }
+
+    #[test]
+    fn selected_details_dock_full_width_below_the_graph_at_every_breakpoint() {
+        let criteria = format!("{}DETAIL-TAIL-VISIBLE", "x".repeat(82));
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "detail-dock"},
+            "tasks": [{
+                "id": "LONG", "title": "selected task", "kind": "impl",
+                "owner": "dev", "state": "done", "deps": [],
+                "criteria": criteria, "attempts": []
+            }]
+        }))
+        .unwrap();
+
+        for w in [170usize, 120, 72] {
+            let scene = model::build(
+                &doc,
+                Some("LONG"),
+                None,
+                None,
+                &model::ViewOpts::default(),
+            );
+            let frame = compose(
+                &FrameInput {
+                    doc: &doc,
+                    scene: &scene,
+                    selected: Some("LONG"),
+                    banner: None,
+                    flash: None,
+                    stale_min: None,
+                    watching: false,
+                    herdr: None,
+                    prompt: None,
+                    messages: &[],
+                },
+                w,
+            );
+            let plain: Vec<String> = frame
+                .lines
+                .iter()
+                .map(|line| crate::select::plain(line))
+                .collect();
+            let row_line = frame
+                .hits
+                .iter()
+                .find_map(|hit| match &hit.target {
+                    HitTarget::Row(key) if key == "LONG" => Some(hit.line),
+                    _ => None,
+                })
+                .expect("selected row hit");
+            let card_start = plain
+                .iter()
+                .position(|line| line.contains("─ LONG ·"))
+                .expect("focus-card heading");
+
+            assert!(card_start > row_line, "w={w}: detail must follow the graph");
+            assert_eq!(frame.sel_line, Some(row_line), "w={w}: row remains the selection anchor");
+            assert_eq!(
+                plain[card_start].width(),
+                w,
+                "w={w}: focus card must claim the complete frame"
+            );
+            assert!(
+                !plain[..card_start].iter().any(|line| line.contains("[m] message")),
+                "w={w}: focus content must not remain in the sidecar"
+            );
+            let message_hit = frame
+                .hits
+                .iter()
+                .find(|hit| matches!(hit.target, HitTarget::Message))
+                .expect("message action hit");
+            assert!(message_hit.line > card_start, "w={w}: message action belongs to card");
+            assert_eq!((message_hit.x0, message_hit.x1), (0, w));
+
+            if w >= 120 {
+                assert!(
+                    plain.iter().any(|line| line.contains("DETAIL-TAIL-VISIBLE")),
+                    "w={w}: width beyond the former card cap must reveal the criteria tail"
+                );
+            }
         }
     }
 

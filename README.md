@@ -2,7 +2,7 @@
 
 Your agent swarm as a live DAG, in a [herdr](https://herdr.dev) pane.
 
-![the dagr pane at full width: trace left, attention queue and focus card right](assets/pane-sidecar.svg)
+![the dagr pane at full width: trace and attention queue above a full-width selection card](assets/pane-sidecar.svg)
 
 > *Dagr* is the Norse personification of day: he rides across the sky once
 > per cycle and illuminates everything below. Also, it's a DAG. With herdr's r.
@@ -164,19 +164,21 @@ single-cell ASCII working mark.
 
 ## Layout
 
-One responsive pane, two established terminal idioms:
+One responsive pane, two graph grammars, with selected-item detail always
+docked at full width below the graph:
 
-- **At ~146 columns and up** (the screenshot above): trace left,
-  attention queue and focus card right; cursor movement live-updates
-  the card. lazygit's grammar.
-- **Below that**: full-width trace with detail docked below, including
-  the provenance event tail. tig's grammar.
+- **At ~146 columns and up** (the screenshot above): trace left and a
+  compact attention queue right. lazygit's grammar.
+- **Below that**: full-width trace. tig's grammar.
+
+At either width, cursor movement live-updates the full-width detail dock,
+including criteria, receipts, operator messages, and the provenance event tail.
 
 ![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
 
 Both screenshots are real renderer output, regenerable with
 [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py):
-`dagr view samples/run.json --snapshot --width 150 | scripts/snapshot-svg.py out.svg`.
+`dagr view samples/run.json --snapshot --width 150 --select G2 | python3 scripts/snapshot-svg.py out.svg`.
 
 ## Navigation
 
