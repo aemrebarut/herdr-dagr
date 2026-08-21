@@ -173,6 +173,7 @@ docked at full width below the graph:
 
 At either width, cursor movement live-updates the full-width detail dock,
 including criteria, receipts, operator messages, and the provenance event tail.
+Detail fields wrap to the available columns instead of clipping their tails.
 
 ![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
 

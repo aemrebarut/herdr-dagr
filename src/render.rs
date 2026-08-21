@@ -433,6 +433,117 @@ fn compact_row(row: &Row, w: usize, selected: bool) -> (String, Option<(usize, u
 
 // ── focus card ──────────────────────────────────────────────────────
 
+/// The run document is bounded, but a single producer-controlled field can
+/// still be very large. Normal focus detail wraps completely; this ceiling
+/// prevents one selected value from expanding into an unbounded frame.
+const MAX_FOCUS_BODY_ROWS: usize = 256;
+
+/// Wrap terminal-safe text to visible columns, preferring word boundaries
+/// and hard-wrapping only when a token itself is wider than the card.
+/// Returns whether the explicit safety limit omitted a remaining tail.
+fn wrap_focus_text(text: &str, width: usize, max_lines: usize) -> (Vec<String>, bool) {
+    use unicode_width::UnicodeWidthChar;
+
+    let safe = style::terminal_safe(text);
+    if width == 0 || max_lines == 0 {
+        return (Vec::new(), !safe.is_empty());
+    }
+    if safe.is_empty() {
+        return (vec![String::new()], false);
+    }
+
+    let mut rest = safe.as_str();
+    let mut lines = Vec::new();
+    while !rest.is_empty() && lines.len() < max_lines {
+        let mut used = 0usize;
+        let mut hard_end = 0usize;
+        let mut word_break: Option<(usize, usize)> = None;
+        let mut overflow = false;
+
+        for (idx, ch) in rest.char_indices() {
+            let char_width = ch.width().unwrap_or(0);
+            if used + char_width > width {
+                overflow = true;
+                break;
+            }
+            used += char_width;
+            hard_end = idx + ch.len_utf8();
+            if ch.is_whitespace() && idx > 0 {
+                word_break = Some((idx, hard_end));
+            }
+        }
+
+        if !overflow {
+            lines.push(rest.trim_end().to_string());
+            rest = "";
+            break;
+        }
+
+        let (line_end, next_start) = word_break.unwrap_or_else(|| {
+            if hard_end > 0 {
+                (hard_end, hard_end)
+            } else {
+                // Defensive progress for a glyph wider than `width`. Focus
+                // cards currently have at least four inner columns.
+                let first_end = rest.chars().next().map(char::len_utf8).unwrap_or(0);
+                (first_end, first_end)
+            }
+        });
+        lines.push(rest[..line_end].trim_end().to_string());
+        rest = rest[next_start..].trim_start();
+    }
+
+    let clipped = !rest.is_empty();
+    if clipped {
+        if let Some(last) = lines.last_mut() {
+            *last = trunc(&format!("{last}…"), width);
+        }
+    }
+    (lines, clipped)
+}
+
+fn focus_body_row(cw: usize, border_color: u8, text: &str, text_style: Style) -> String {
+    let mut line = Line::new(cw);
+    line.put(0, "│ ", Style::fg(border_color));
+    line.put(2, text, text_style);
+    line.put(cw.saturating_sub(2), " │", Style::fg(border_color));
+    line.render(None, true)
+}
+
+fn focus_body_rows(body: Vec<(String, Style)>, cw: usize, border_color: u8) -> Vec<String> {
+    let inner = cw.saturating_sub(4);
+    let mut rows = Vec::new();
+    let mut limited = false;
+
+    for (text, text_style) in body {
+        let remaining = MAX_FOCUS_BODY_ROWS.saturating_sub(rows.len());
+        if remaining == 0 {
+            limited = true;
+            break;
+        }
+        let (wrapped, clipped) = wrap_focus_text(&text, inner, remaining);
+        rows.extend(
+            wrapped
+                .iter()
+                .map(|line| focus_body_row(cw, border_color, line, text_style)),
+        );
+        if clipped {
+            limited = true;
+            break;
+        }
+    }
+
+    if limited {
+        rows.push(focus_body_row(
+            cw,
+            border_color,
+            "… additional detail omitted at safety limit",
+            Style::dim(style::MUTED),
+        ));
+    }
+    rows
+}
+
 fn find_selection<'a>(doc: &'a Doc, key: &str) -> Option<(&'a Task, Option<&'a Attempt>)> {
     if !crate::contract::valid_identity(key) {
         return None;
@@ -491,19 +602,18 @@ pub fn focus_card(
                 &format!("┌{label}{}┐", "─".repeat(cw.saturating_sub(2 + label.width()))),
                 Style::bold(col),
             )];
-            for (text, text_style) in [
+            let body = [
                 (project.title.as_deref(), Style::fg(style::TEXT)),
                 (project.owner.as_deref(), Style::dim(style::MUTED)),
                 (project.note.as_deref(), Style::dim(style::MUTED)),
-            ] {
-                if let Some(text) = text.filter(|text| !text.is_empty()) {
-                    let mut line = Line::new(cw);
-                    line.put(0, "│ ", Style::fg(col));
-                    line.put(2, &trunc(text, cw.saturating_sub(4)), text_style);
-                    line.put(cw.saturating_sub(2), " │", Style::fg(col));
-                    lines.push(line.render(None, true));
-                }
-            }
+            ]
+            .into_iter()
+            .filter_map(|(text, text_style)| {
+                text.filter(|text| !text.is_empty())
+                    .map(|text| (text.to_string(), text_style))
+            })
+            .collect();
+            lines.extend(focus_body_rows(body, cw, col));
             lines.push(paint(
                 &format!("└{}┘", "─".repeat(cw.saturating_sub(2))),
                 Style::fg(col),
@@ -516,7 +626,6 @@ pub fn focus_card(
     };
     let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "invalid".into());
     let col = style::state_color(&state);
-    let inner = cw.saturating_sub(4);
     let now = doc.generated_at.as_deref().and_then(parse_min);
     let mut body: Vec<(String, Style)> = Vec::new();
 
@@ -745,8 +854,6 @@ pub fn focus_card(
         ));
     }
 
-    body.push(("[m] message orchestrator  [enter] focus pane".into(), Style::fg(style::ACCENT)));
-
     // frame it
     let disp = attempt.and_then(|a| a.id.clone()).unwrap_or_else(|| tid.to_string());
     let label = match attempt.and_then(|a| a.n) {
@@ -757,13 +864,15 @@ pub fn focus_card(
     let label = trunc(&label, cw.saturating_sub(2));
     let dash_n = cw.saturating_sub(2 + label.width());
     lines.push(paint(&format!("┌{label}{}┐", "─".repeat(dash_n)), Style::bold(col)));
-    for (txt, st) in body {
-        let mut l = Line::new(cw);
-        l.put(0, "│ ", Style::fg(col));
-        l.put(2, &trunc(&txt, inner), st);
-        l.put(cw.saturating_sub(2), " │", Style::fg(col));
-        lines.push(l.render(None, true));
-    }
+    lines.extend(focus_body_rows(body, cw, col));
+    // The action is structural, not producer detail: keep it available even
+    // when a pathological field consumes the entire safety budget.
+    lines.push(focus_body_row(
+        cw,
+        col,
+        "[m] message orchestrator  [enter] focus pane",
+        Style::fg(style::ACCENT),
+    ));
     lines.push(paint(&format!("└{}┘", "─".repeat(cw.saturating_sub(2))), Style::fg(col)));
     lines
 }
@@ -985,13 +1094,17 @@ pub fn compose(input: &FrameInput, w: usize) -> Frame {
     // width always reveals more criteria, receipts, and operator messages.
     if let Some(k) = sel {
         out.push(String::new());
-        let card = focus_card(input.doc, k, w, input.herdr, input.messages);
+        // Never write the card into the terminal's final auto-wrap cell.
+        // Ghostty and Herdr both correctly treat that cell as a wrap trigger,
+        // which made the right border disappear at otherwise valid widths.
+        let card_w = w.saturating_sub(1);
+        let card = focus_card(input.doc, k, card_w, input.herdr, input.messages);
         let card_start = out.len();
         if let Some(i) = card.iter().position(|line| line.contains("[m] message")) {
             hits.push(Hit {
                 line: card_start + i,
                 x0: 0,
-                x1: w,
+                x1: card_w,
                 target: HitTarget::Message,
             });
         }
@@ -1352,22 +1465,39 @@ mod tests {
 
     #[test]
     fn selected_details_dock_full_width_below_the_graph_at_every_breakpoint() {
-        let criteria = format!("{}DETAIL-TAIL-VISIBLE", "x".repeat(82));
+        let criteria = format!("{}CRITERIA-TAIL", "criterion-word ".repeat(20));
+        let receipt = format!("{}RECEIPT-TAIL", "receipt-word ".repeat(20));
+        let event = format!("{}EVENT-TAIL", "event-word ".repeat(20));
+        let project_note = format!("{}PROJECT-TAIL", "project-word ".repeat(20));
         let doc: Doc = serde_json::from_value(serde_json::json!({
             "dagr": 2,
             "run": {"id": "detail-dock"},
+            "generated_at": "2026-08-21T04:00:00Z",
+            "projects": [{
+                "id": "P", "title": "project", "note": project_note
+            }],
             "tasks": [{
                 "id": "LONG", "title": "selected task", "kind": "impl",
-                "owner": "dev", "state": "done", "deps": [],
-                "criteria": criteria, "attempts": []
+                "project": "P", "owner": "dev", "state": "done", "deps": [],
+                "criteria": criteria,
+                "attempts": [{
+                    "id": "LONG·a1", "n": 1, "state": "done", "actor": "dev",
+                    "started_at": "2026-08-21T03:55:00Z",
+                    "ended_at": "2026-08-21T04:00:00Z",
+                    "outcome": {"result": "done", "evidence": "verified", "receipt": receipt}
+                }]
+            }],
+            "events": [{
+                "at": "2026-08-21T04:00:00Z", "type": "note",
+                "task": "LONG", "detail": event
             }]
         }))
         .unwrap();
 
-        for w in [170usize, 120, 72] {
+        for w in [170usize, 120, 72, 20] {
             let scene = model::build(
                 &doc,
-                Some("LONG"),
+                Some("LONG·a1"),
                 None,
                 None,
                 &model::ViewOpts::default(),
@@ -1376,7 +1506,7 @@ mod tests {
                 &FrameInput {
                     doc: &doc,
                     scene: &scene,
-                    selected: Some("LONG"),
+                    selected: Some("LONG·a1"),
                     banner: None,
                     flash: None,
                     stale_min: None,
@@ -1396,22 +1526,34 @@ mod tests {
                 .hits
                 .iter()
                 .find_map(|hit| match &hit.target {
-                    HitTarget::Row(key) if key == "LONG" => Some(hit.line),
+                    HitTarget::Row(key) if key == "LONG·a1" => Some(hit.line),
                     _ => None,
                 })
                 .expect("selected row hit");
             let card_start = plain
                 .iter()
-                .position(|line| line.contains("─ LONG ·"))
+                .position(|line| line.contains("─ LONG·a1 ·"))
                 .expect("focus-card heading");
+            let card_end = plain[card_start..]
+                .iter()
+                .position(|line| line.ends_with('┘'))
+                .map(|offset| card_start + offset)
+                .expect("focus-card footer");
+            let card = plain[card_start..=card_end].join("\n");
 
             assert!(card_start > row_line, "w={w}: detail must follow the graph");
             assert_eq!(frame.sel_line, Some(row_line), "w={w}: row remains the selection anchor");
-            assert_eq!(
-                plain[card_start].width(),
-                w,
-                "w={w}: focus card must claim the complete frame"
-            );
+            assert!(plain[card_start].ends_with('┐'), "w={w}: right border must be present");
+            for line in &plain[card_start..=card_end] {
+                assert_eq!(
+                    line.width(),
+                    w - 1,
+                    "w={w}: card reserves exactly the terminal auto-wrap cell: {line:?}"
+                );
+            }
+            for tail in ["CRITERIA-TAIL", "RECEIPT-TAIL", "EVENT-TAIL"] {
+                assert!(card.contains(tail), "w={w}: wrapped card lost {tail}:\n{card}");
+            }
             assert!(
                 !plain[..card_start].iter().any(|line| line.contains("[m] message")),
                 "w={w}: focus content must not remain in the sidecar"
@@ -1422,15 +1564,24 @@ mod tests {
                 .find(|hit| matches!(hit.target, HitTarget::Message))
                 .expect("message action hit");
             assert!(message_hit.line > card_start, "w={w}: message action belongs to card");
-            assert_eq!((message_hit.x0, message_hit.x1), (0, w));
-
-            if w >= 120 {
-                assert!(
-                    plain.iter().any(|line| line.contains("DETAIL-TAIL-VISIBLE")),
-                    "w={w}: width beyond the former card cap must reveal the criteria tail"
-                );
-            }
+            assert_eq!((message_hit.x0, message_hit.x1), (0, w - 1));
         }
+
+        let project = focus_card(&doc, "project:P", 19, None, &[])
+            .iter()
+            .map(|line| crate::select::plain(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(project.contains("PROJECT-TAIL"), "project note must wrap completely:\n{project}");
+    }
+
+    #[test]
+    fn focus_wrapping_is_explicitly_bounded() {
+        let (lines, clipped) = wrap_focus_text(&"wide-word ".repeat(100), 8, 3);
+        assert_eq!(lines.len(), 3);
+        assert!(clipped);
+        assert!(lines.last().is_some_and(|line| line.ends_with('…')));
+        assert!(lines.iter().all(|line| line.width() <= 8));
     }
 
     #[test]
