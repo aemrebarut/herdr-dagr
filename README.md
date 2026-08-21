@@ -172,9 +172,22 @@ at full width below the graph:
 - **Below that**: full-width trace. tig's grammar.
 
 At either width, cursor movement updates a fixed four-line inspector without
-moving the graph. Its double-line frame is deliberately distinct from graph
-rails; it contains identity/state, the most useful operational signal, and
-actor/timing plus `model·thinking` in the bottom border.
+moving the graph. Its rounded, state-colored frame is deliberately distinct
+from graph rails: identity and status live in the top border, task content and
+the most useful operational signal occupy the body, and actor/timing plus
+`model·thinking` live in the bottom border:
+
+```
+╭─ BUILD·a1 ─────────────────────────────────────────────── ◎ WORKING ─╮
+│ build the API                                                        │
+│ progress 3/7 · handlers                                              │
+╰─ api-dev ────────────────────── 30m… ─────── [sol5.6·max] ───────────╯
+```
+
+Footer anchors depend only on pane width. A longer duration consumes rail to
+the left without moving `m`, a longer model consumes rail to the right without
+moving its column, and one final rail cell keeps `╯` visibly connected. At
+very narrow widths optional timing disappears before identity or geometry.
 Press `d` for a focus-plus-context view of the selected node's
 direct inputs and outputs; the complete detail body scrolls independently below
 it. Press `d` or `esc` to return to the exact graph position.
@@ -311,8 +324,9 @@ Cargo is required only when building from source.
 
 **v0.3.1.** Long graphs now scroll inside their own vertical region;
 selected-item detail and command hints remain docked regardless of graph
-length. Mouse targets, text selection, page navigation, modal prompts, and
-extremely tall wrapped detail share the same height-aware layout.
+length. The compact inspector uses a state-colored rounded frame with fixed
+footer anchors. Mouse targets, text selection, page navigation, modal prompts,
+and extremely tall wrapped detail share the same height-aware layout.
 
 **v0.3.0.** Contract v3 makes the editable message composer the sole action
 path while v1/v2 files remain readable with legacy action data inert. Each

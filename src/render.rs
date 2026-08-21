@@ -1,7 +1,7 @@
 //! Rows → ANSI frames. Two layouts, both established terminal grammars:
 //! `sidecar` (≥ ~146 cols: trace left, attention queue right) folding to
 //! `cockpit` (full-width trace). Interactive browsing uses a stable
-//! three-row inspector; an explicit detail mode swaps the trace for a
+//! four-row inspector; an explicit detail mode swaps the trace for a
 //! focus-plus-context lens above the full card. Renderers are pure functions
 //! of (state, width, presentation mode).
 
@@ -723,69 +723,75 @@ fn operational_summary(
     ("no additional context".into(), Style::dim(style::MUTED))
 }
 
-fn compact_rule(width: usize, left: &str, right: &str) -> Line {
+fn compact_border(width: usize, left: &str, right: &str, rail: &str, color: u8) -> Line {
     let mut line = Line::new(width);
     if width == 0 {
         return line;
     }
-    line.put(0, &"═".repeat(width), Style::fg(style::EDGE));
-    line.put(0, left, Style::fg(style::EDGE));
+    line.put(0, &rail.repeat(width), Style::fg(color));
+    line.put(0, left, Style::fg(color));
     if width > 1 {
-        line.put(width - 1, right, Style::fg(style::EDGE));
+        line.put(width - 1, right, Style::fg(color));
     }
     line
 }
 
-fn compact_header_row(display: &str, title: &str, state: &str, width: usize) -> String {
-    let mut line = Line::new(width);
-    if width > 0 {
-        line.put(0, "║", Style::fg(style::EDGE));
-    }
-    if width > 1 {
-        line.put(width - 1, "║", Style::fg(style::EDGE));
-    }
-    if width < 4 {
+/// Put identity and state in the panel's top rail. The state block is
+/// right-anchored; identity spends only the cells left of it. Both anchors
+/// are derived from width alone, so changing selections cannot move the
+/// panel boundary.
+fn compact_header_border(display: &str, state: &str, width: usize) -> String {
+    let color = style::state_color(state);
+    let mut line = compact_border(width, "╭", "╮", "─", color);
+    if width < 3 {
         return line.render(None, true);
     }
-    let boundary = width - 1;
-    let limit = boundary.saturating_sub(1);
-    let color = style::state_color(state);
-    let mut x = 2.min(limit);
-    if x < limit {
-        x = line.put(x, &style::state_glyph(state).to_string(), Style::bold(color));
+
+    let inner_start = 1usize;
+    let inner_end = width - 1; // exclusive: the right corner owns this cell
+    let inner_width = inner_end - inner_start;
+    let glyph = style::state_glyph(state);
+    let full_status = format!(" {glyph} {} ", state.to_uppercase());
+    let glyph_status = format!(" {glyph} ");
+    let status = if full_status.width() + 4 <= inner_width {
+        full_status
+    } else if glyph_status.width() + 3 <= inner_width {
+        glyph_status
+    } else {
+        String::new()
+    };
+
+    // One rail cell remains between the status and the top-right corner.
+    let status_end = inner_end.saturating_sub(1);
+    let status_x = status_end.saturating_sub(status.width()).max(inner_start);
+    if !status.is_empty() {
+        line.put(status_x, &status, Style::bold(color));
     }
-    if x < limit {
-        x = line.put(x, " ", Style::plain());
-    }
-    if x < limit {
-        x = line.put(x, &trunc(display, limit.saturating_sub(x)), Style::bold(color));
-    }
-    if x + 3 < limit {
-        x = line.put(x, " · ", Style::dim(style::RULE));
-        x = line.put(
-            x,
-            &trunc(&state.to_uppercase(), limit.saturating_sub(x)),
-            Style::bold(color),
+
+    // Match the selected G prototype: corner, rail, identity, then rail.
+    let name_x = (inner_start + 1).min(status_x);
+    let name_room = status_x.saturating_sub(name_x);
+    if name_room >= 3 {
+        let name = trunc(display, name_room.saturating_sub(2));
+        line.put(name_x, &format!(" {name} "), Style::bold(style::TEXT));
+    } else if status_x > inner_start {
+        line.put(
+            inner_start,
+            &trunc(display, status_x - inner_start),
+            Style::bold(style::TEXT),
         );
-    }
-    if !title.is_empty() && x + 3 < limit {
-        x = line.put(x, " · ", Style::dim(style::RULE));
-        x = line.put(x, &trunc(title, limit.saturating_sub(x)), Style::fg(style::TEXT));
-    }
-    if x < limit {
-        line.put(x, " ", Style::plain());
     }
     line.render(None, true)
 }
 
-fn compact_body_row(text: &str, text_style: Style, width: usize) -> String {
+fn compact_body_row(text: &str, text_style: Style, border_color: u8, width: usize) -> String {
     let mut line = Line::new(width);
     if width == 0 {
         return line.render(None, true);
     }
-    line.put(0, "║", Style::fg(style::EDGE));
+    line.put(0, "│", Style::fg(border_color));
     if width > 1 {
-        line.put(width - 1, "║", Style::fg(style::EDGE));
+        line.put(width - 1, "│", Style::fg(border_color));
     }
     if width > 4 {
         line.put(2, &trunc(text, width - 4), text_style);
@@ -793,76 +799,150 @@ fn compact_body_row(text: &str, text_style: Style, width: usize) -> String {
     line.render(None, true)
 }
 
+const COMPACT_MODEL_SLOT_WIDTH: usize = 24;
+const COMPACT_MIN_ACTOR_SLOT_WIDTH: usize = 6;
+const COMPACT_ELAPSED_DIGIT_BUDGET: usize = 9;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompactElapsed {
+    minutes: i64,
+    live: bool,
+}
+
+/// Content-independent footer geometry. At a given terminal width, actor,
+/// elapsed-time unit, model chip, and both corners always occupy the same
+/// columns no matter which graph row is selected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CompactFooterLayout {
+    actor_start: usize,
+    actor_end: usize,
+    elapsed_unit_x: Option<usize>,
+    model_start: usize,
+    model_end: usize,
+}
+
+impl CompactFooterLayout {
+    fn for_width(width: usize) -> Self {
+        let inner_start = usize::from(width > 0);
+        let inner_end = width.saturating_sub(1);
+        // Preserve one visible rail cell immediately before the bottom-right
+        // corner. Without it a model chip's trailing space makes `╯` look
+        // detached even though the row is geometrically complete.
+        let model_end = inner_end.saturating_sub(1).max(inner_start);
+        let usable_width = model_end.saturating_sub(inner_start);
+
+        // Keep a useful actor prefix at tiny widths, then grow the model
+        // column to its stable 24-cell width. Its left edge—not its content
+        // length—is the visual anchor.
+        let model_width = COMPACT_MODEL_SLOT_WIDTH.min(
+            usable_width.saturating_sub(COMPACT_MIN_ACTOR_SLOT_WIDTH),
+        );
+        let model_start = model_end.saturating_sub(model_width);
+
+        // The `m` is pinned to the middle column. Reserve a fixed digit lane
+        // to its left and room for a live ellipsis to its right. If that
+        // complete lane does not fit, omit elapsed time instead of shifting
+        // it or colliding with identity.
+        let candidate_unit_x = width / 2;
+        let elapsed_start = candidate_unit_x
+            .saturating_sub(COMPACT_ELAPSED_DIGIT_BUDGET + 1);
+        let elapsed_end = candidate_unit_x.saturating_add(3);
+        let elapsed_unit_x = (elapsed_start
+            >= inner_start.saturating_add(COMPACT_MIN_ACTOR_SLOT_WIDTH)
+            && elapsed_end <= model_start)
+            .then_some(candidate_unit_x);
+        let actor_end = elapsed_unit_x.map_or(model_start, |_| elapsed_start);
+
+        Self {
+            actor_start: inner_start,
+            actor_end,
+            elapsed_unit_x,
+            model_start,
+            model_end,
+        }
+    }
+}
+
+/// Bound pathological durations without moving the unit anchor or pretending
+/// that a clipped number is exact. Normal minute counts pass through intact.
+fn compact_elapsed_digits(minutes: i64, budget: usize) -> String {
+    let digits = minutes.max(0).to_string();
+    if digits.width() <= budget {
+        return digits;
+    }
+    match budget {
+        0 => String::new(),
+        1 => "…".into(),
+        n => format!(">{}", "9".repeat(n - 1)),
+    }
+}
+
 fn compact_metadata_border(
     actor: &str,
-    elapsed: Option<&str>,
+    elapsed: Option<CompactElapsed>,
     model: &str,
+    border_color: u8,
     width: usize,
 ) -> String {
-    let mut line = compact_rule(width, "╚", "╝");
-    if width < 4 {
+    let mut line = compact_border(width, "╰", "╯", "─", border_color);
+    if width < 3 {
         return line.render(None, true);
     }
-    let inner_start = 1usize;
-    let inner_end = width - 1;
-    let inner_width = inner_end - inner_start;
+    let layout = CompactFooterLayout::for_width(width);
 
-    // Model+effort is the most fragile identity at narrow widths, so reserve
-    // it from the right before spending cells on actor decoration or timing.
-    let model_budget = inner_width.saturating_sub(usize::from(!actor.is_empty()) * 3);
-    let model_chip = compact_model_chip(model, model_budget);
-    let decorated_model = format!(" [{model_chip}] ");
-    let actor_width = style::terminal_safe(actor).width();
-    let model_block = if !model_chip.is_empty()
-        && decorated_model.width()
-            + if actor.is_empty() { 0 } else { actor_width.saturating_add(1) }
-            <= inner_width
-    {
-        decorated_model
-    } else {
-        model_chip
-    };
-    let model_x = inner_end.saturating_sub(model_block.width());
-    if !model_block.is_empty() {
-        line.put(model_x, &model_block, Style::bold(style::MUTED));
+    let actor_slot_width = layout.actor_end.saturating_sub(layout.actor_start);
+    let safe_actor = style::terminal_safe(actor);
+    let decorated_actor = format!(" {safe_actor} ");
+    if !safe_actor.is_empty() && decorated_actor.width() < actor_slot_width {
+        line.put(
+            layout.actor_start + 1,
+            &decorated_actor,
+            Style::dim(style::MUTED),
+        );
+    } else if actor_slot_width > 0 {
+        line.put(
+            layout.actor_start,
+            &trunc(&safe_actor, actor_slot_width),
+            Style::dim(style::MUTED),
+        );
     }
 
-    let actor_room = if model_block.is_empty() {
-        inner_width
-    } else {
-        model_x.saturating_sub(inner_start + 1)
-    };
-    let actor_chip = trunc(actor, actor_room);
-    let decorated_actor = format!(" {actor_chip} ");
-    let (actor_x, actor_block) = if !actor_chip.is_empty() && decorated_actor.width() <= actor_room {
-        (inner_start + 1, decorated_actor)
-    } else {
-        (inner_start, actor_chip)
-    };
-    let actor_end = if actor_block.is_empty() {
-        inner_start
-    } else {
-        line.put(actor_x, &actor_block, Style::dim(style::MUTED))
-    };
+    if let (Some(elapsed), Some(unit_x)) = (elapsed, layout.elapsed_unit_x) {
+        let digits = compact_elapsed_digits(elapsed.minutes, COMPACT_ELAPSED_DIGIT_BUDGET);
+        let suffix = if elapsed.live { "m… " } else { "m " };
+        let block = format!(" {digits}{suffix}");
+        let x = unit_x.saturating_sub(digits.width() + 1);
+        line.put(x, &block, Style::dim(style::MUTED));
+    }
 
-    if let Some(elapsed) = elapsed.filter(|value| !value.is_empty()) {
-        let right = if model_block.is_empty() { inner_end } else { model_x };
-        let gap = right.saturating_sub(actor_end);
-        let elapsed_block = format!(" {elapsed} ");
-        if elapsed_block.width() + 2 <= gap {
-            let x = actor_end + (gap - elapsed_block.width()) / 2;
-            line.put(x, &elapsed_block, Style::dim(style::MUTED));
-        }
+    let model_slot_width = layout.model_end.saturating_sub(layout.model_start);
+    if !model.is_empty() && model_slot_width > 0 {
+        let safe_model = style::terminal_safe(model);
+        let decorated_budget = model_slot_width.saturating_sub(4);
+        let decorated_chip = compact_model_chip(&safe_model, decorated_budget);
+        let decorated_model = format!(" [{decorated_chip}] ");
+        let model_block = if !decorated_chip.is_empty()
+            && decorated_model.width() <= model_slot_width
+            && safe_model.width() + 4 <= model_slot_width
+        {
+            decorated_model
+        } else {
+            compact_model_chip(&safe_model, model_slot_width)
+        };
+        line.put(
+            layout.model_start,
+            &model_block,
+            Style::bold(style::MUTED),
+        );
     }
     line.render(None, true)
 }
 
-fn compact_identity_border(
-    task: &Task,
-    attempt: Option<&Attempt>,
+fn compact_identity<'a>(
+    task: &'a Task,
+    attempt: Option<&'a Attempt>,
     now: Option<i64>,
-    width: usize,
-) -> String {
+) -> (&'a str, Option<CompactElapsed>, &'a str) {
     let actor = attempt
         .and_then(|a| a.actor.as_deref())
         .or(task.owner.as_deref())
@@ -871,12 +951,45 @@ fn compact_identity_border(
     let elapsed = attempt.and_then(|a| {
         let start = a.started_at.as_deref().and_then(parse_min)?;
         match (a.ended_at.as_deref().and_then(parse_min), now) {
-            (Some(end), _) if end >= start => Some(format!("{}m", end - start)),
-            (None, Some(current)) if current >= start => Some(format!("{}m…", current - start)),
+            (Some(end), _) if end >= start => Some(CompactElapsed {
+                minutes: end - start,
+                live: false,
+            }),
+            (None, Some(current)) if current >= start => Some(CompactElapsed {
+                minutes: current - start,
+                live: true,
+            }),
             _ => None,
         }
     });
-    compact_metadata_border(actor, elapsed.as_deref(), model, width)
+    (actor, elapsed, model)
+}
+
+struct CompactPanel<'a> {
+    display: &'a str,
+    title: &'a str,
+    state: &'a str,
+    summary: &'a str,
+    summary_style: Style,
+    actor: &'a str,
+    elapsed: Option<CompactElapsed>,
+    model: &'a str,
+}
+
+fn render_compact_panel(panel: CompactPanel<'_>, width: usize) -> Vec<String> {
+    let border_color = style::state_color(panel.state);
+    vec![
+        compact_header_border(panel.display, panel.state, width),
+        compact_body_row(panel.title, Style::fg(style::TEXT), border_color, width),
+        compact_body_row(panel.summary, panel.summary_style, border_color, width),
+        compact_metadata_border(
+            panel.actor,
+            panel.elapsed,
+            panel.model,
+            border_color,
+            width,
+        ),
+    ]
 }
 
 /// Exactly four rows at every selection and width. The fixed contract is
@@ -889,76 +1002,90 @@ pub fn compact_inspector(
     _messages: &[crate::message::Summary],
 ) -> Vec<String> {
     if width < 8 {
-        return vec![
-            compact_rule(width, "╔", "╗").render(None, true),
-            compact_header_row("…", "", "queued", width),
-            compact_body_row("", Style::plain(), width),
-            compact_metadata_border("", None, "", width),
-        ];
+        return render_compact_panel(
+            CompactPanel {
+                display: "…",
+                title: "",
+                state: "queued",
+                summary: "",
+                summary_style: Style::plain(),
+                actor: "",
+                elapsed: None,
+                model: "",
+            },
+            width,
+        );
     }
     let Some(key) = key else {
-        return vec![
-            compact_rule(width, "╔", "╗").render(None, true),
-            compact_header_row("nothing selected", "", "queued", width),
-            compact_body_row("j/k selects a row", Style::dim(style::MUTED), width),
-            compact_metadata_border("", None, "", width),
-        ];
+        return render_compact_panel(
+            CompactPanel {
+                display: "nothing selected",
+                title: "Select a task or project",
+                state: "queued",
+                summary: "j/k selects a row",
+                summary_style: Style::dim(style::MUTED),
+                actor: "",
+                elapsed: None,
+                model: "",
+            },
+            width,
+        );
     };
 
     if let Some(id) = key.strip_prefix("project:") {
         let project = doc.projects.iter().find(|project| project.id.as_deref() == Some(id));
         if let Some(project) = project {
             let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
-            return vec![
-                compact_rule(width, "╔", "╗").render(None, true),
-                compact_header_row(
-                    id,
-                    project.title.as_deref().unwrap_or("project"),
-                    &state,
-                    width,
-                ),
-                compact_body_row(
-                    project.note.as_deref().unwrap_or("project scope"),
-                    Style::dim(style::MUTED),
-                    width,
-                ),
-                compact_metadata_border(
-                    project.owner.as_deref().unwrap_or("unassigned"),
-                    None,
-                    "",
-                    width,
-                ),
-            ];
+            return render_compact_panel(
+                CompactPanel {
+                    display: id,
+                    title: project.title.as_deref().unwrap_or("project"),
+                    state: &state,
+                    summary: project.note.as_deref().unwrap_or("project scope"),
+                    summary_style: Style::dim(style::MUTED),
+                    actor: project.owner.as_deref().unwrap_or("unassigned"),
+                    elapsed: None,
+                    model: "",
+                },
+                width,
+            );
         }
     }
 
     let Some((task, attempt)) = find_selection(doc, key) else {
-        return vec![
-            compact_rule(width, "╔", "╗").render(None, true),
-            compact_header_row("selection unavailable", "", "blocked", width),
-            compact_body_row(
-                "reload or choose another row",
-                Style::dim(style::MUTED),
-                width,
-            ),
-            compact_metadata_border("", None, "", width),
-        ];
+        return render_compact_panel(
+            CompactPanel {
+                display: "selection unavailable",
+                title: "Selected row no longer exists",
+                state: "blocked",
+                summary: "reload or choose another row",
+                summary_style: Style::dim(style::MUTED),
+                actor: "",
+                elapsed: None,
+                model: "",
+            },
+            width,
+        );
     };
     let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "invalid".into());
     let display = attempt.and_then(|a| a.id.as_deref()).or(task.id.as_deref()).unwrap_or(key);
 
     let (summary, summary_style) = operational_summary(doc, task, attempt, &state);
-    vec![
-        compact_rule(width, "╔", "╗").render(None, true),
-        compact_header_row(display, task.title.as_deref().unwrap_or(""), &state, width),
-        compact_body_row(&summary, summary_style, width),
-        compact_identity_border(
-            task,
-            attempt,
-            doc.generated_at.as_deref().and_then(parse_min),
-            width,
-        ),
-    ]
+    let (actor, elapsed, model) =
+        compact_identity(task, attempt, doc.generated_at.as_deref().and_then(parse_min));
+    render_compact_panel(
+        CompactPanel {
+            display,
+            title: task.title.as_deref().unwrap_or("task"),
+            state: &state,
+            summary: &summary,
+            summary_style,
+            actor,
+            elapsed,
+            model,
+        },
+        width,
+    )
 }
 
 pub fn focus_card(
@@ -1535,7 +1662,7 @@ pub struct FrameInput<'a> {
 
 /// The logical frame can serve three consumers without conflating their
 /// geometry: snapshots keep the complete card, ordinary interaction gets a
-/// stable three-row inspector, and explicit details get a causal lens plus
+/// stable four-row inspector, and explicit details get a causal lens plus
 /// the complete card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InspectorMode {
@@ -2278,25 +2405,39 @@ mod tests {
         assert!(escaped.width() <= 11);
         assert!(escaped.ends_with("·max"));
         for width in [72usize, 20] {
-            let lines = compact_inspector(&doc, Some("BUILD·a1"), width, None, &[])
+            let rendered = compact_inspector(&doc, Some("BUILD·a1"), width, None, &[]);
+            let lines = rendered
                 .iter()
                 .map(|line| crate::select::plain(line))
                 .collect::<Vec<_>>();
             assert_eq!(lines.len(), 4);
-            assert_eq!(
-                lines[0],
-                format!("╔{}╗", "═".repeat(width.saturating_sub(2))),
-                "the top edge uses a distinct, uninterrupted panel grammar"
+            assert!(lines[0].starts_with('╭') && lines[0].ends_with('╮'));
+            assert!(lines[1].starts_with('│') && lines[1].ends_with('│'));
+            assert!(lines[2].starts_with('│') && lines[2].ends_with('│'));
+            assert!(lines[3].starts_with('╰') && lines[3].ends_with('╯'));
+            let working_color = format!("\x1b[38;5;{}m", style::WORKING);
+            assert!(rendered[0].contains(&format!("{working_color}╭")));
+            assert!(rendered[0].contains(&format!("{working_color}─╮")));
+            assert!(rendered[3].contains(&format!("{working_color}╰")));
+            let final_border = &rendered[3]
+                [rendered[3].rfind(&working_color).expect("final border color")
+                    + working_color.len()..];
+            assert!(
+                final_border.starts_with('─') && final_border.contains("╯\x1b[0m"),
+                "width={width}: {final_border:?}"
             );
-            assert!(lines[1].starts_with('║') && lines[1].ends_with('║'));
-            assert!(lines[2].starts_with('║') && lines[2].ends_with('║'));
-            assert!(lines[3].starts_with('╚') && lines[3].ends_with('╝'));
-            assert!(lines[1].contains("BUILD·a1"));
+            assert!(
+                lines[0].contains(if width >= 32 { "BUILD" } else { "BU" }),
+                "identity belongs in the top rail: {:?}",
+                lines[0]
+            );
+            assert!(!lines[0].contains("build the API"), "task content stays below the rail");
+            assert!(lines[1].contains("build the API"));
             if width >= 32 {
-                assert!(lines[1].contains("WORKING"));
+                assert!(lines[0].contains("WORKING"));
             } else {
                 assert!(
-                    lines[1].contains('◎'),
+                    lines[0].contains('◎'),
                     "the state glyph survives narrow mode"
                 );
             }
@@ -2304,7 +2445,11 @@ mod tests {
             if width >= 32 {
                 assert!(lines[2].contains("handlers"));
             }
-            assert!(lines[3].contains("api-dev"), "width={width}: actor missing: {:?}", lines[3]);
+            assert!(
+                lines[3].contains(if width >= 32 { "api-dev" } else { "api-" }),
+                "width={width}: actor identity missing: {:?}",
+                lines[3]
+            );
             assert!(
                 lines[3].contains("sol5.6·max"),
                 "width={width}: model+effort must survive intact: {:?}",
@@ -2314,7 +2459,7 @@ mod tests {
                 assert!(lines[3].contains("[sol5.6·max]"));
             }
             assert!(
-                lines[3].find("api-dev").unwrap() < lines[3].find("sol5.6·max").unwrap(),
+                lines[3].find("api-").unwrap() < lines[3].find("sol5.6·max").unwrap(),
                 "width={width}: independently anchored fields collided: {:?}",
                 lines[3]
             );
@@ -2354,6 +2499,102 @@ mod tests {
             4,
             "the whole compact inspector is a drill-down target"
         );
+    }
+
+    fn column_of(text: &str, needle: &str) -> usize {
+        let byte = text.find(needle).unwrap_or_else(|| panic!("missing {needle:?} in {text:?}"));
+        text[..byte].width()
+    }
+
+    #[test]
+    fn compact_footer_pins_time_unit_model_slot_and_right_corner() {
+        let width = 78;
+        let short = crate::select::plain(&compact_metadata_border(
+            "dev",
+            Some(CompactElapsed { minutes: 10, live: false }),
+            "o3·max",
+            style::WORKING,
+            width,
+        ));
+        let long = crate::select::plain(&compact_metadata_border(
+            "a-much-longer-actor-name",
+            Some(CompactElapsed { minutes: 1000, live: false }),
+            "claude-fable-5·xhigh",
+            style::WORKING,
+            width,
+        ));
+        let live = crate::select::plain(&compact_metadata_border(
+            "someone-else",
+            Some(CompactElapsed { minutes: 1000, live: true }),
+            "gpt-5.6-sol·max",
+            style::WORKING,
+            width,
+        ));
+        let layout = CompactFooterLayout::for_width(width);
+        assert_eq!(column_of(&short, "10m") + 2, layout.elapsed_unit_x.unwrap());
+        assert_eq!(column_of(&long, "1000m") + 4, layout.elapsed_unit_x.unwrap());
+        assert_eq!(column_of(&live, "1000m") + 4, layout.elapsed_unit_x.unwrap());
+        assert_eq!(column_of(&short, "10m"), column_of(&long, "1000m") + 2);
+
+        // The opening bracket is one cell into the fixed model lane because
+        // the chip carries a leading breathing space. Content length only
+        // consumes rail to the right; it cannot move the component itself.
+        let model_x = layout.model_start + 1;
+        assert_eq!(column_of(&short, "[o3·max]"), model_x);
+        assert_eq!(column_of(&long, "[claude-fable-5·xhigh]"), model_x);
+        assert_eq!(column_of(&live, "[gpt-5.6-sol·max]"), model_x);
+
+        for footer in [&short, &long, &live] {
+            assert_eq!(footer.width(), width);
+            assert!(footer.starts_with('╰'));
+            assert!(footer.ends_with("─╯"), "the corner must stay connected: {footer}");
+            assert_eq!(column_of(footer, "╯"), width - 1);
+        }
+    }
+
+    #[test]
+    fn compact_panel_geometry_survives_every_width_state_and_untrusted_label() {
+        for state in [
+            "done",
+            "working",
+            "waiting",
+            "blocked",
+            "review",
+            "failed",
+            "canceled",
+            "needs_answer",
+        ] {
+            for width in 0usize..=160 {
+                let lines = render_compact_panel(
+                    CompactPanel {
+                        display: "wide界-name\x1b[31m",
+                        title: "title with a wide 界 glyph and\nnewline",
+                        state,
+                        summary: "summary\twith terminal-active text",
+                        summary_style: Style::fg(style::TEXT),
+                        actor: "operator界",
+                        elapsed: Some(CompactElapsed { minutes: i64::MAX, live: true }),
+                        model: "claude-fable-5·xhigh",
+                    },
+                    width,
+                );
+                assert_eq!(lines.len(), 4);
+                let plain = lines.iter().map(|line| crate::select::plain(line)).collect::<Vec<_>>();
+                assert!(plain.iter().all(|line| line.width() == width), "state={state} width={width}: {plain:?}");
+                assert!(plain.iter().all(|line| !line.contains('\x1b')));
+                if width >= 2 {
+                    assert!(plain[0].starts_with('╭') && plain[0].ends_with('╮'));
+                    assert!(plain[1].starts_with('│') && plain[1].ends_with('│'));
+                    assert!(plain[2].starts_with('│') && plain[2].ends_with('│'));
+                    assert!(plain[3].starts_with('╰') && plain[3].ends_with('╯'));
+                }
+                if width >= 60 {
+                    assert_eq!(column_of(&plain[3], "m"), width / 2);
+                    assert_eq!(column_of(&plain[3], "[claude-fable-5·xhigh]"), width - 25);
+                    assert!(plain[3].ends_with("─╯"));
+                }
+            }
+        }
     }
 
     #[test]
