@@ -2055,13 +2055,13 @@ mod tests {
         let long = tall_doc(Some("criterion ".repeat(120)));
         let short = composed_with(&short, "T20", 72, render::InspectorMode::Compact);
         let long = composed_with(&long, "T20", 72, render::InspectorMode::Compact);
-        assert_eq!(short.detail_end - short.graph_end, 5);
-        assert_eq!(long.detail_end - long.graph_end, 5);
+        assert_eq!(short.detail_end - short.graph_end, 4);
+        assert_eq!(long.detail_end - long.graph_end, 4);
 
         let short_screen = screen_frame_mode(&short, 20, 72, 0, false, 0);
         let long_screen = screen_frame_mode(&long, 20, 72, 0, false, 0);
         assert_eq!(short_screen.graph_rows, long_screen.graph_rows);
-        assert_eq!(short_screen.graph_rows, 14, "20 rows - 5 inspector - 1 footer");
+        assert_eq!(short_screen.graph_rows, 15, "20 rows - 4 inspector - 1 footer");
         assert_eq!(short_screen.lines.len(), 20);
         assert_eq!(long_screen.lines.len(), 20);
         assert!(

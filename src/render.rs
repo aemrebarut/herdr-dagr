@@ -728,45 +728,29 @@ fn compact_rule(width: usize, left: &str, right: &str) -> Line {
     if width == 0 {
         return line;
     }
-    line.put(0, &"─".repeat(width), Style::dim(style::RULE));
-    line.put(0, left, Style::fg(style::RULE));
+    line.put(0, &"═".repeat(width), Style::fg(style::EDGE));
+    line.put(0, left, Style::fg(style::EDGE));
     if width > 1 {
-        line.put(width - 1, right, Style::fg(style::RULE));
+        line.put(width - 1, right, Style::fg(style::EDGE));
     }
     line
 }
 
-fn compact_header_row(
-    display: &str,
-    title: &str,
-    state: &str,
-    more: Option<&str>,
-    width: usize,
-) -> String {
+fn compact_header_row(display: &str, title: &str, state: &str, width: usize) -> String {
     let mut line = Line::new(width);
     if width > 0 {
-        line.put(0, "│", Style::fg(style::RULE));
+        line.put(0, "║", Style::fg(style::EDGE));
     }
     if width > 1 {
-        line.put(width - 1, "│", Style::fg(style::RULE));
+        line.put(width - 1, "║", Style::fg(style::EDGE));
     }
     if width < 4 {
         return line.render(None, true);
     }
     let boundary = width - 1;
-    let more_block = more
-        .map(|value| format!(" {value} "))
-        .filter(|block| block.width() + 2 < width);
-    let more_x = more_block
-        .as_ref()
-        .map(|block| boundary.saturating_sub(block.width() + 1))
-        .unwrap_or(boundary);
-    let limit = more_x.saturating_sub(1);
+    let limit = boundary.saturating_sub(1);
     let color = style::state_color(state);
     let mut x = 2.min(limit);
-    if x < limit {
-        x = line.put(x, " ", Style::plain());
-    }
     if x < limit {
         x = line.put(x, &style::state_glyph(state).to_string(), Style::bold(color));
     }
@@ -791,65 +775,7 @@ fn compact_header_row(
     if x < limit {
         line.put(x, " ", Style::plain());
     }
-    if let Some(block) = more_block {
-        line.put(more_x, &block, Style::dim(style::MUTED));
-    }
     line.render(None, true)
-}
-
-fn compact_task_context(doc: &Doc, task: &Task) -> String {
-    let mut parts = vec![project_breadcrumb(doc, task.project.as_deref()).replace(" / ", " › ")];
-    let inputs = task.inputs.as_deref().unwrap_or(&task.deps).len();
-    if inputs > 0 {
-        let relation = if task.kind.as_deref() == Some("gate") { "joins" } else { "after" };
-        parts.push(format!("{relation} {inputs}"));
-    }
-    if let Some(id) = task.id.as_deref() {
-        let outputs = doc
-            .tasks
-            .as_deref()
-            .unwrap_or(&[])
-            .iter()
-            .filter(|candidate| {
-                candidate
-                    .inputs
-                    .as_deref()
-                    .unwrap_or(&candidate.deps)
-                    .iter()
-                    .any(|dependency| dependency == id)
-            })
-            .count();
-        if outputs > 0 {
-            parts.push(format!("unlocks {outputs}"));
-        }
-    }
-    parts.join(" · ")
-}
-
-fn compact_project_context(doc: &Doc, id: &str) -> String {
-    let mut parts = vec![project_breadcrumb(doc, Some(id)).replace(" / ", " › ")];
-    let child_projects = doc
-        .projects
-        .iter()
-        .filter(|project| project.parent.as_deref() == Some(id))
-        .count();
-    let direct_tasks = doc
-        .tasks
-        .as_deref()
-        .unwrap_or(&[])
-        .iter()
-        .filter(|task| task.project.as_deref() == Some(id))
-        .count();
-    if child_projects > 0 {
-        parts.push(format!(
-            "{child_projects} subproject{}",
-            if child_projects == 1 { "" } else { "s" }
-        ));
-    }
-    if direct_tasks > 0 {
-        parts.push(format!("{direct_tasks} task{}", if direct_tasks == 1 { "" } else { "s" }));
-    }
-    parts.join(" · ")
 }
 
 fn compact_body_row(text: &str, text_style: Style, width: usize) -> String {
@@ -857,9 +783,9 @@ fn compact_body_row(text: &str, text_style: Style, width: usize) -> String {
     if width == 0 {
         return line.render(None, true);
     }
-    line.put(0, "│", Style::fg(style::RULE));
+    line.put(0, "║", Style::fg(style::EDGE));
     if width > 1 {
-        line.put(width - 1, "│", Style::fg(style::RULE));
+        line.put(width - 1, "║", Style::fg(style::EDGE));
     }
     if width > 4 {
         line.put(2, &trunc(text, width - 4), text_style);
@@ -873,7 +799,7 @@ fn compact_metadata_border(
     model: &str,
     width: usize,
 ) -> String {
-    let mut line = compact_rule(width, "└", "┘");
+    let mut line = compact_rule(width, "╚", "╝");
     if width < 4 {
         return line.render(None, true);
     }
@@ -953,30 +879,28 @@ fn compact_identity_border(
     compact_metadata_border(actor, elapsed.as_deref(), model, width)
 }
 
-/// Exactly five rows at every selection and width. The fixed contract is
+/// Exactly four rows at every selection and width. The fixed contract is
 /// what keeps cursor movement from changing the graph viewport's geometry.
 pub fn compact_inspector(
     doc: &Doc,
     key: Option<&str>,
     width: usize,
-    hints: Option<&crate::herdr::Hints>,
-    messages: &[crate::message::Summary],
+    _hints: Option<&crate::herdr::Hints>,
+    _messages: &[crate::message::Summary],
 ) -> Vec<String> {
     if width < 8 {
         return vec![
-            compact_rule(width, "┌", "┐").render(None, true),
-            compact_header_row("…", "", "queued", None, width),
-            compact_body_row("", Style::plain(), width),
+            compact_rule(width, "╔", "╗").render(None, true),
+            compact_header_row("…", "", "queued", width),
             compact_body_row("", Style::plain(), width),
             compact_metadata_border("", None, "", width),
         ];
     }
     let Some(key) = key else {
         return vec![
-            compact_rule(width, "┌", "┐").render(None, true),
-            compact_header_row("nothing selected", "", "queued", None, width),
+            compact_rule(width, "╔", "╗").render(None, true),
+            compact_header_row("nothing selected", "", "queued", width),
             compact_body_row("j/k selects a row", Style::dim(style::MUTED), width),
-            compact_body_row("run root", Style::dim(style::MUTED), width),
             compact_metadata_border("", None, "", width),
         ];
     };
@@ -985,24 +909,16 @@ pub fn compact_inspector(
         let project = doc.projects.iter().find(|project| project.id.as_deref() == Some(id));
         if let Some(project) = project {
             let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "queued".into());
-            let full = focus_card(doc, key, width, hints, messages).len();
-            let more = (full > 5).then(|| format!("+{}", full - 5));
             return vec![
-                compact_rule(width, "┌", "┐").render(None, true),
+                compact_rule(width, "╔", "╗").render(None, true),
                 compact_header_row(
                     id,
                     project.title.as_deref().unwrap_or("project"),
                     &state,
-                    more.as_deref(),
                     width,
                 ),
                 compact_body_row(
                     project.note.as_deref().unwrap_or("project scope"),
-                    Style::dim(style::MUTED),
-                    width,
-                ),
-                compact_body_row(
-                    &compact_project_context(doc, id),
                     Style::dim(style::MUTED),
                     width,
                 ),
@@ -1018,38 +934,24 @@ pub fn compact_inspector(
 
     let Some((task, attempt)) = find_selection(doc, key) else {
         return vec![
-            compact_rule(width, "┌", "┐").render(None, true),
-            compact_header_row("selection unavailable", "", "blocked", None, width),
+            compact_rule(width, "╔", "╗").render(None, true),
+            compact_header_row("selection unavailable", "", "blocked", width),
             compact_body_row(
                 "reload or choose another row",
                 Style::dim(style::MUTED),
                 width,
             ),
-            compact_body_row("run graph changed", Style::dim(style::MUTED), width),
             compact_metadata_border("", None, "", width),
         ];
     };
     let state = crate::model::selection_state(doc, key).unwrap_or_else(|| "invalid".into());
-    let full = focus_card(doc, key, width, hints, messages).len();
-    let more = (full > 5).then(|| format!("+{}", full - 5));
     let display = attempt.and_then(|a| a.id.as_deref()).or(task.id.as_deref()).unwrap_or(key);
 
     let (summary, summary_style) = operational_summary(doc, task, attempt, &state);
     vec![
-        compact_rule(width, "┌", "┐").render(None, true),
-        compact_header_row(
-            display,
-            task.title.as_deref().unwrap_or(""),
-            &state,
-            more.as_deref(),
-            width,
-        ),
+        compact_rule(width, "╔", "╗").render(None, true),
+        compact_header_row(display, task.title.as_deref().unwrap_or(""), &state, width),
         compact_body_row(&summary, summary_style, width),
-        compact_body_row(
-            &compact_task_context(doc, task),
-            Style::dim(style::MUTED),
-            width,
-        ),
         compact_identity_border(
             task,
             attempt,
@@ -1816,7 +1718,7 @@ pub fn compose_with_inspector(input: &FrameInput, w: usize, inspector: Inspector
         }
     }
 
-    // Browse mode has exactly five inspector rows; selection content can
+    // Browse mode has exactly four inspector rows; selection content can
     // never renegotiate the graph viewport. Full/focus modes retain complete
     // wrapped detail for snapshots and explicit drill-down respectively.
     let graph_end = out.len();
@@ -2380,16 +2282,15 @@ mod tests {
                 .iter()
                 .map(|line| crate::select::plain(line))
                 .collect::<Vec<_>>();
-            assert_eq!(lines.len(), 5);
+            assert_eq!(lines.len(), 4);
             assert_eq!(
                 lines[0],
-                format!("┌{}┐", "─".repeat(width.saturating_sub(2))),
-                "the top edge is an uninterrupted visual boundary"
+                format!("╔{}╗", "═".repeat(width.saturating_sub(2))),
+                "the top edge uses a distinct, uninterrupted panel grammar"
             );
-            assert!(lines[1].starts_with('│') && lines[1].ends_with('│'));
-            assert!(lines[2].starts_with('│') && lines[2].ends_with('│'));
-            assert!(lines[3].starts_with('│') && lines[3].ends_with('│'));
-            assert!(lines[4].starts_with('└') && lines[4].ends_with('┘'));
+            assert!(lines[1].starts_with('║') && lines[1].ends_with('║'));
+            assert!(lines[2].starts_with('║') && lines[2].ends_with('║'));
+            assert!(lines[3].starts_with('╚') && lines[3].ends_with('╝'));
             assert!(lines[1].contains("BUILD·a1"));
             if width >= 32 {
                 assert!(lines[1].contains("WORKING"));
@@ -2403,24 +2304,19 @@ mod tests {
             if width >= 32 {
                 assert!(lines[2].contains("handlers"));
             }
-            if width >= 72 {
-                assert!(lines[3].contains("Application › API stream"));
-                assert!(lines[3].contains("after 1"));
-                assert!(lines[3].contains("unlocks 2"));
-            }
-            assert!(lines[4].contains("api-dev"), "width={width}: actor missing: {:?}", lines[4]);
+            assert!(lines[3].contains("api-dev"), "width={width}: actor missing: {:?}", lines[3]);
             assert!(
-                lines[4].contains("sol5.6·max"),
+                lines[3].contains("sol5.6·max"),
                 "width={width}: model+effort must survive intact: {:?}",
-                lines[4]
+                lines[3]
             );
             if width >= 32 {
-                assert!(lines[4].contains("[sol5.6·max]"));
+                assert!(lines[3].contains("[sol5.6·max]"));
             }
             assert!(
-                lines[4].find("api-dev").unwrap() < lines[4].find("sol5.6·max").unwrap(),
+                lines[3].find("api-dev").unwrap() < lines[3].find("sol5.6·max").unwrap(),
                 "width={width}: independently anchored fields collided: {:?}",
-                lines[4]
+                lines[3]
             );
             assert!(lines.iter().all(|line| line.width() == width));
         }
@@ -2448,14 +2344,14 @@ mod tests {
             72,
             InspectorMode::Compact,
         );
-        assert_eq!(frame.detail_end - frame.graph_end, 5);
+        assert_eq!(frame.detail_end - frame.graph_end, 4);
         assert_eq!(
             frame
                 .hits
                 .iter()
                 .filter(|hit| matches!(hit.target, HitTarget::Details))
                 .count(),
-            5,
+            4,
             "the whole compact inspector is a drill-down target"
         );
     }
