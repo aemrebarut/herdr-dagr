@@ -1041,7 +1041,7 @@ pub fn selection_state(doc: &Doc, key: &str) -> Option<String> {
     }
     key.strip_prefix("project:")
         .and_then(|id| ix.project_by_id.get(id).copied())
-        .map(|pi| project_row(&ix, pi, 0).state)
+        .map(|pi| project_row(&ix, pi, "").state)
 }
 
 /// Does a row answer this search? Matched fields: row key, display name,
@@ -1053,13 +1053,13 @@ pub fn row_matches(r: &Row, q: &str) -> bool {
         .any(|s| s.to_lowercase().contains(&q))
 }
 
-fn project_row(ix: &Ix, pi: usize, depth: usize) -> Row {
+fn project_row(ix: &Ix, pi: usize, rail: &str) -> Row {
     let project = &ix.projects[pi];
     let id = project.id.as_deref().unwrap_or("?");
     let mut row = Row::blank(&ix.project_key(pi), "", "queued");
     row.project = true;
     row.selectable = ix.project_selectable[pi];
-    row.rail = "  ".repeat(depth);
+    row.rail = rail.to_string();
     row.glyph = '▾';
     row.name = id.to_string();
     row.title = project.title.clone().unwrap_or_default();
@@ -1371,10 +1371,17 @@ pub fn build(
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct ProjectPos<'p> {
+        row_prefix: &'p str,
+        is_root: bool,
+        is_last: bool,
+    }
+
     fn walk_project<'a, 'b>(
         w: &mut Walker<'a, 'b>,
         pi: usize,
-        depth: usize,
+        pos: ProjectPos<'_>,
         parent: Option<&str>,
         scoped: &std::collections::HashMap<Option<usize>, Vec<NodeRef>>,
         project_children: &[Vec<usize>],
@@ -1389,7 +1396,7 @@ pub fn build(
             .partition(|&n| w.ix.task_of(n).kind.as_deref() != Some("gate"));
         let children = project_children.get(pi).map(Vec::as_slice).unwrap_or(&[]);
         let key = w.ix.project_key(pi);
-        let mut row = project_row(w.ix, pi, depth);
+        let mut row = project_row(w.ix, pi, pos.row_prefix);
         row.parent = parent.map(str::to_string);
         row.has_kids = !ordinary.is_empty() || !gates.is_empty() || !children.is_empty();
         w.rows.push(row);
@@ -1433,25 +1440,40 @@ pub fn build(
             return;
         }
 
-        let prefix = format!("{}  ", "  ".repeat(depth));
-        let ordinary_n = ordinary.len();
-        for (i, n) in ordinary.drain(..).enumerate() {
-            w.walk(n, &prefix, false, i + 1 == ordinary_n, Some(&key));
+        // A project is a compact two-column scope node: its caret sits on
+        // the parent's rail and its aggregate-state node starts this scope's
+        // child rail. If a later sibling follows this project, preserve that
+        // parent rail through every row in the project subtree.
+        let prefix = format!(
+            "{}{}",
+            pos.row_prefix,
+            if pos.is_root || pos.is_last { "  " } else { "│ " }
+        );
+        let content_n = ordinary.len() + children.len() + gates.len();
+        let mut content_i = 0usize;
+        for n in ordinary.drain(..) {
+            content_i += 1;
+            w.walk(n, &prefix, false, content_i == content_n, Some(&key));
         }
         for &child in children {
+            content_i += 1;
             walk_project(
                 w,
                 child,
-                depth + 1,
+                ProjectPos {
+                    row_prefix: &prefix,
+                    is_root: false,
+                    is_last: content_i == content_n,
+                },
                 Some(&key),
                 scoped,
                 project_children,
                 project_seen,
             );
         }
-        let gates_n = gates.len();
-        for (i, n) in gates.drain(..).enumerate() {
-            w.walk(n, &prefix, false, i + 1 == gates_n, Some(&key));
+        for n in gates.drain(..) {
+            content_i += 1;
+            w.walk(n, &prefix, false, content_i == content_n, Some(&key));
         }
     }
 
@@ -1491,7 +1513,7 @@ pub fn build(
             walk_project(
                 &mut w,
                 pi,
-                0,
+                ProjectPos { row_prefix: "", is_root: true, is_last: true },
                 parent.as_deref(),
                 &scoped,
                 &project_children,
@@ -1520,7 +1542,7 @@ pub fn build(
                 walk_project(
                     &mut w,
                     pi,
-                    0,
+                    ProjectPos { row_prefix: "", is_root: true, is_last: true },
                     None,
                     &scoped,
                     &project_children,
@@ -1534,7 +1556,7 @@ pub fn build(
                     walk_project(
                         &mut w,
                         pi,
-                        0,
+                        ProjectPos { row_prefix: "", is_root: true, is_last: true },
                         None,
                         &scoped,
                         &project_children,
@@ -2341,9 +2363,42 @@ mod tests {
         assert!(pos("project:B") < pos("PG"), "shared gate follows both child streams");
         assert!(pos("PG") < pos("project:C"), "product gate remains inside product project");
         assert!(pos("project:C") < pos("RG"), "cross-project gate is a run-level milestone");
-        assert_eq!(scene.rows.iter().find(|r| r.key == "AG").unwrap().rail, "    ╰─");
+        assert_eq!(scene.rows.iter().find(|r| r.key == "AG").unwrap().rail, "  │ ╰─");
         assert_eq!(scene.rows.iter().find(|r| r.key == "PG").unwrap().rail, "  ╰─");
         assert_eq!(scene.rows.iter().find(|r| r.key == "RG").unwrap().rail, " ");
+    }
+
+    #[test]
+    fn project_milestone_keeps_the_rail_open_through_the_preceding_branch() {
+        let doc: Doc = serde_json::from_value(serde_json::json!({
+            "dagr": 2,
+            "run": {"id": "project-rail"},
+            "projects": [{"id": "P", "title": "Project"}],
+            "tasks": [
+                {"id": "A", "title": "first", "kind": "impl", "project": "P",
+                 "state": "queued", "deps": [], "attempts": []},
+                {"id": "B", "title": "second", "kind": "impl", "project": "P",
+                 "state": "queued", "deps": ["A"], "attempts": []},
+                {"id": "G", "title": "milestone", "kind": "gate", "project": "P",
+                 "state": "queued", "deps": ["B"], "attempts": []}
+            ]
+        }))
+        .unwrap();
+
+        let scene = build(&doc, None, None, None, &ViewOpts::default());
+        let rail = |key: &str| {
+            scene
+                .rows
+                .iter()
+                .find(|row| row.key == key)
+                .unwrap()
+                .rail
+                .as_str()
+        };
+        assert_eq!(rail("project:P"), "");
+        assert_eq!(rail("A"), "  ├─", "a later milestone keeps the project rail open");
+        assert_eq!(rail("B"), "  │ ╰─", "the continuation survives the whole branch");
+        assert_eq!(rail("G"), "  ╰─", "only the final project item closes the rail");
     }
 
     #[test]

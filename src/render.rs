@@ -1152,7 +1152,7 @@ mod tests {
     }
 
     #[test]
-    fn project_state_nodes_connect_to_direct_child_rails() {
+    fn project_state_nodes_connect_to_all_content_rails() {
         let doc: Doc = serde_json::from_value(serde_json::json!({
             "dagr": 2,
             "run": {"id": "project-rails"},
@@ -1166,7 +1166,10 @@ mod tests {
                  "deps": [], "attempts": []},
                 {"id": "CHILD-TASK", "title": "child task", "kind": "impl",
                  "project": "CHILD", "owner": "dev", "state": "queued",
-                 "deps": [], "attempts": []}
+                 "deps": [], "attempts": []},
+                {"id": "ROOT-GATE", "title": "root milestone", "kind": "gate",
+                 "project": "ROOT", "owner": "lead", "state": "queued",
+                 "deps": ["ROOT-TASK", "CHILD-TASK"], "attempts": []}
             ]
         }))
         .unwrap();
@@ -1181,6 +1184,7 @@ mod tests {
             let root_task = plain("ROOT-TASK", width);
             let child = plain("project:CHILD", width);
             let child_task = plain("CHILD-TASK", width);
+            let gate = plain("ROOT-GATE", width);
             assert!(root.contains("▾ ○ ROOT"), "width={width}: {root:?}");
             assert!(child.contains("▾ ○ CHILD"), "width={width}: {child:?}");
 
@@ -1189,8 +1193,8 @@ mod tests {
             };
             assert_eq!(
                 column(&root, '○'),
-                column(&root_task, '╰'),
-                "width={width}: root scope node must feed its task rail"
+                column(&root_task, '├'),
+                "width={width}: a later milestone must keep the root rail open"
             );
             assert_eq!(
                 column(&root, '○'),
@@ -1198,9 +1202,19 @@ mod tests {
                 "width={width}: a child project's fold control stays on the parent rail"
             );
             assert_eq!(
+                column(&root, '○'),
+                column(&child_task, '│'),
+                "width={width}: the parent continuation survives the nested project"
+            );
+            assert_eq!(
                 column(&child, '○'),
                 column(&child_task, '╰'),
                 "width={width}: nested scope node must feed its task rail"
+            );
+            assert_eq!(
+                column(&root, '○'),
+                column(&gate, '╰'),
+                "width={width}: the final milestone closes the root rail"
             );
         }
     }
