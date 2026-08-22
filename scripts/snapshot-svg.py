@@ -4,6 +4,8 @@
 The README images are generated, not drawn: pipe a snapshot in, get a
 terminal-styled SVG out. Handles the subset of SGR dagr emits (38;5;N
 foreground, 48;5;N background, bold, dim, resets).
+Box-drawing cells become vector paths so browser font metrics cannot open
+seams that a terminal emulator correctly joins.
 
 Usage: dagr view run.json --snapshot --compact --width 150 | snapshot-svg.py out.svg
 """
@@ -19,6 +21,8 @@ PAD = 16          # frame padding
 BG = "#101318"    # terminal background
 FG = "#e6e6e6"    # default foreground (SGR 39)
 FONT = "'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace"
+BOX_DRAWING = frozenset("─│┄┌┐└┘├╭╮╯╰")
+SQUARE_CORNERS = frozenset("┌┐└┘")
 
 SGR = re.compile(r"\x1b\[([0-9;]*)m")
 
@@ -86,6 +90,88 @@ def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def box_path(ch, x, top, span=1):
+    """Draw a box glyph on terminal-cell boundaries, with no font seams."""
+    x0, x1 = x, x + CW * span
+    y0, y1 = top, top + LH
+    cx, cy = x + CW / 2, top + LH / 2
+    radius = min(CW * 0.38, LH * 0.22)
+    if ch == "─":
+        return f"M{x0:.2f},{cy:.2f} H{x1:.2f}"
+    if ch == "│":
+        return f"M{cx:.2f},{y0:.2f} V{y1:.2f}"
+    if ch == "┄":
+        gap = CW * 0.12
+        dash = (CW - 4 * gap) / 3
+        return " ".join(
+            f"M{x0 + gap + i * (dash + gap):.2f},{cy:.2f} h{dash:.2f}"
+            for i in range(3)
+        )
+    if ch == "├":
+        return f"M{cx:.2f},{y0:.2f} V{y1:.2f} M{cx:.2f},{cy:.2f} H{x1:.2f}"
+    if ch == "┌":
+        return f"M{cx:.2f},{y1:.2f} V{cy:.2f} H{x1:.2f}"
+    if ch == "┐":
+        return f"M{x0:.2f},{cy:.2f} H{cx:.2f} V{y1:.2f}"
+    if ch == "└":
+        return f"M{cx:.2f},{y0:.2f} V{cy:.2f} H{x1:.2f}"
+    if ch == "┘":
+        return f"M{x0:.2f},{cy:.2f} H{cx:.2f} V{y0:.2f}"
+    if ch == "╭":
+        return (
+            f"M{cx:.2f},{y1:.2f} V{cy + radius:.2f} "
+            f"Q{cx:.2f},{cy:.2f} {cx + radius:.2f},{cy:.2f} H{x1:.2f}"
+        )
+    if ch == "╮":
+        return (
+            f"M{x0:.2f},{cy:.2f} H{cx - radius:.2f} "
+            f"Q{cx:.2f},{cy:.2f} {cx:.2f},{cy + radius:.2f} V{y1:.2f}"
+        )
+    if ch == "╰":
+        return (
+            f"M{cx:.2f},{y0:.2f} V{cy - radius:.2f} "
+            f"Q{cx:.2f},{cy:.2f} {cx + radius:.2f},{cy:.2f} H{x1:.2f}"
+        )
+    if ch == "╯":
+        return (
+            f"M{x0:.2f},{cy:.2f} H{cx - radius:.2f} "
+            f"Q{cx:.2f},{cy:.2f} {cx:.2f},{cy - radius:.2f} V{y0:.2f}"
+        )
+    raise ValueError(f"unsupported box glyph: {ch!r}")
+
+
+def text_element(text, x, y, fg, bold, dim):
+    n = cells(text)
+    attrs = [
+        f'x="{x:.1f}"',
+        f'y="{y:.1f}"',
+        f'textLength="{n * CW:.1f}"',
+        'lengthAdjust="spacingAndGlyphs"',
+        f'fill="{xterm256(fg) if fg is not None else FG}"',
+        'xml:space="preserve"',
+    ]
+    if bold:
+        attrs.append('font-weight="bold"')
+    if dim:
+        attrs.append('fill-opacity="0.55"')
+    return f"<text {' '.join(attrs)}>{esc(text)}</text>"
+
+
+def box_element(ch, x, top, fg, bold, dim, span=1):
+    line_join = "miter" if ch in SQUARE_CORNERS else "round"
+    attrs = [
+        f'd="{box_path(ch, x, top, span)}"',
+        f'stroke="{xterm256(fg) if fg is not None else FG}"',
+        'fill="none"',
+        f'stroke-width="{1.45 if bold else 1.1}"',
+        'stroke-linecap="square"',
+        f'stroke-linejoin="{line_join}"',
+    ]
+    if dim:
+        attrs.append('stroke-opacity="0.55"')
+    return f"<path {' '.join(attrs)}/>"
+
+
 def main():
     out_path = sys.argv[1]
     lines = sys.stdin.read().split("\n")
@@ -97,7 +183,9 @@ def main():
 
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" '
-        f'viewBox="0 0 {w:.0f} {h:.0f}" font-family="{FONT}" font-size="{FS}">',
+        f'viewBox="0 0 {w:.0f} {h:.0f}" preserveAspectRatio="xMinYMin meet" '
+        f'font-family="{FONT}" font-size="{FS}" font-variant-ligatures="none" '
+        f'text-rendering="geometricPrecision" shape-rendering="geometricPrecision">',
         f'<rect width="100%" height="100%" rx="8" fill="{BG}"/>',
     ]
     for row, line in enumerate(lines):
@@ -113,20 +201,48 @@ def main():
                     f'<rect x="{x:.1f}" y="{PAD + row * LH:.1f}" '
                     f'width="{n * CW:.1f}" height="{LH}" fill="{xterm256(bgc)}"/>'
                 )
-            if text.strip():
-                attrs = [
-                    f'x="{x:.1f}"',
-                    f'y="{y:.1f}"',
-                    f'textLength="{n * CW:.1f}"',
-                    'lengthAdjust="spacingAndGlyphs"',
-                    f'fill="{xterm256(fg) if fg is not None else FG}"',
-                    'xml:space="preserve"',
-                ]
-                if bold:
-                    attrs.append('font-weight="bold"')
-                if dim:
-                    attrs.append('fill-opacity="0.55"')
-                svg.append(f"<text {' '.join(attrs)}>{esc(text)}</text>")
+            # Terminal emulators join box-drawing glyphs across adjacent
+            # cells. Browser fonts generally do not, leaving visible seams
+            # in frames and graph rails. Keep ordinary text as shaped runs,
+            # but draw the box glyphs dagr emits as exact cell paths.
+            offset = 0
+            start = 0
+            chunk = ""
+            index = 0
+            while index < len(text):
+                char = text[index]
+                if char in BOX_DRAWING:
+                    if chunk.strip():
+                        svg.append(text_element(chunk, x + start * CW, y, fg, bold, dim))
+                    chunk = ""
+                    # A horizontal rail is one path, not one glyph per cell:
+                    # this is both smaller and mathematically seamless.
+                    span = 1
+                    if char == "─":
+                        while index + span < len(text) and text[index + span] == char:
+                            span += 1
+                    svg.append(
+                        box_element(
+                            char,
+                            x + offset * CW,
+                            PAD + row * LH,
+                            fg,
+                            bold,
+                            dim,
+                            span,
+                        )
+                    )
+                    offset += span
+                    index += span
+                    start = offset
+                else:
+                    if not chunk:
+                        start = offset
+                    chunk += char
+                    offset += cells(char)
+                    index += 1
+            if chunk.strip():
+                svg.append(text_element(chunk, x + start * CW, y, fg, bold, dim))
             col += n
     svg.append("</svg>")
     with open(out_path, "w") as f:

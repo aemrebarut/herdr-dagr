@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="637" height="507" viewBox="0 0 637 507" font-family="'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace" font-size="14">
+<svg xmlns="http://www.w3.org/2000/svg" width="637" height="488" viewBox="0 0 637 488" preserveAspectRatio="xMinYMin meet" font-family="'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace" font-size="14" font-variant-ligatures="none" text-rendering="geometricPrecision" shape-rendering="geometricPrecision">
 <rect width="100%" height="100%" rx="8" fill="#101318"/>
 <text x="24.4" y="30.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve" font-weight="bold">assemble: six-lane build → G2</text>
 <text x="293.2" y="30.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">run-assemble-v01 · started 14:02 · no…</text>
@@ -18,124 +18,125 @@
 <text x="58.0" y="125.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve">→</text>
 <text x="66.4" y="125.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">◎ G1</text>
 <text x="108.4" y="125.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">merge L1+L2+L3</text>
-<text x="234.4" y="125.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" fill-opacity="0.55">──────────────────────────────────────</text>
+<path d="M234.40,120.50 H553.60" stroke="#af87ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round" stroke-opacity="0.55"/>
 <text x="562.0" y="125.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">done ◆</text>
-<text x="24.4" y="144.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> ├─</text>
+<path d="M37.00,130.00 V149.00 M37.00,139.50 H41.20" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M41.20,139.50 H49.60" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="49.6" y="144.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L4d</text>
 <text x="100.0" y="144.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">ui against contract</text>
 <text x="268.0" y="144.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">⇠ rebase@G1 </text>
 <text x="452.8" y="144.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">fable·xhigh</text>
 <text x="562.0" y="144.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">done </text>
 <text x="604.0" y="144.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve">◇</text>
-<text x="24.4" y="163.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> │ ╰─</text>
+<path d="M37.00,149.00 V168.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M53.80,149.00 V155.31 Q53.80,158.50 56.99,158.50 H58.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M58.00,158.50 H66.40" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="66.4" y="163.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">✗ L4r</text>
 <text x="116.8" y="163.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#e6e6e6" xml:space="preserve" fill-opacity="0.55">L4 ui lane · rollup corruption · scope breach</text>
 <text x="562.0" y="163.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">fail </text>
 <text x="604.0" y="163.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">◆</text>
-<text x="24.4" y="182.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> │   ╰</text>
+<path d="M37.00,168.00 V187.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M70.60,168.00 V174.31 Q70.60,177.50 73.79,177.50 H74.80" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="74.8" y="182.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve" font-weight="bold">↩</text>
 <text x="83.2" y="182.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L4d·a2</text>
 <text x="158.8" y="182.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">ui against contract</text>
 <text x="452.8" y="182.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">fable·xhigh</text>
 <text x="562.0" y="182.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">done </text>
 <text x="604.0" y="182.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve">◇</text>
-<text x="16.0" y="201.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">▍</text>
-<text x="24.4" y="201.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> │     ╰─</text>
+<path d="M37.00,187.00 V206.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M87.40,187.00 V193.31 Q87.40,196.50 90.59,196.50 H91.60" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M91.60,196.50 H100.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="100.0" y="201.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L4r·a2</text>
 <text x="175.6" y="201.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">L4 ui lane</text>
-<text x="410.8" y="201.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
-<text x="511.6" y="201.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">» G2</text>
+<text x="461.2" y="201.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
 <text x="562.0" y="201.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">pass ◆</text>
-<text x="24.4" y="220.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> ├─</text>
+<path d="M37.00,206.00 V225.00 M37.00,215.50 H41.20" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M41.20,215.50 H49.60" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="49.6" y="220.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L5d</text>
 <text x="100.0" y="220.0" textLength="302.4" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">electron shell · preloads · defaults</text>
 <text x="461.2" y="220.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
 <text x="562.0" y="220.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">done </text>
 <text x="604.0" y="220.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve">◇</text>
-<text x="16.0" y="239.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">▍</text>
-<text x="24.4" y="239.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> │ ╰─</text>
+<path d="M37.00,225.00 V244.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M53.80,225.00 V231.31 Q53.80,234.50 56.99,234.50 H58.00" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M58.00,234.50 H66.40" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="66.4" y="239.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">◎ L5r</text>
 <text x="116.8" y="239.0" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">hardened defaults verified</text>
-<text x="410.8" y="239.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">opus5·max</text>
-<text x="503.2" y="239.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">» G2</text>
+<text x="461.2" y="239.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">opus5·max</text>
 <text x="553.6" y="239.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">working</text>
-<text x="16.0" y="258.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">▍</text>
-<text x="24.4" y="258.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> │   ├┄</text>
+<path d="M37.00,244.00 V263.00" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M70.60,244.00 V263.00 M70.60,253.50 H74.80" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M75.81,253.50 h1.46 M78.27,253.50 h1.46 M80.74,253.50 h1.46" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="83.2" y="258.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve">» G2</text>
 <text x="125.2" y="258.0" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">assemble + integration</text>
 <text x="578.8" y="258.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">if ✓</text>
-<text x="24.4" y="277.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> │   ╰┄</text>
+<path d="M37.00,263.00 V282.00" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M70.60,263.00 V269.31 Q70.60,272.50 73.79,272.50 H74.80" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M75.81,272.50 h1.46 M78.27,272.50 h1.46 M80.74,272.50 h1.46" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
 <text x="83.2" y="277.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">⟲</text>
 <text x="91.6" y="277.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> L5d·a2</text>
 <text x="158.8" y="277.0" textLength="142.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">findings from L5r</text>
 <text x="478.0" y="277.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
 <text x="578.8" y="277.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">if ✗</text>
-<text x="16.0" y="296.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">▍</text>
-<text x="24.4" y="296.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> ├─</text>
-<text x="49.6" y="296.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L6r</text>
-<text x="100.0" y="296.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">L6 offline lane</text>
-<text x="234.4" y="296.0" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">⇠ p1-pass · offli…</text>
-<text x="419.2" y="296.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">opus5·max</text>
-<text x="511.6" y="296.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">» G2</text>
-<text x="562.0" y="296.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">pass </text>
-<text x="604.0" y="296.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve">◇</text>
-<text x="24.4" y="315.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#585858" xml:space="preserve"> ╰─</text>
-<text x="49.6" y="315.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L7s</text>
-<text x="100.0" y="315.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">security suite</text>
-<text x="461.2" y="315.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
-<text x="562.0" y="315.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">pass ◆</text>
-<rect x="16.0" y="320.0" width="8.4" height="19" fill="#303030"/>
-<rect x="24.4" y="320.0" width="8.4" height="19" fill="#303030"/>
-<rect x="32.8" y="320.0" width="8.4" height="19" fill="#303030"/>
-<text x="32.8" y="334.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
-<rect x="41.2" y="320.0" width="8.4" height="19" fill="#303030"/>
-<text x="41.2" y="334.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">◎</text>
-<rect x="49.6" y="320.0" width="8.4" height="19" fill="#303030"/>
-<text x="49.6" y="334.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
-<rect x="58.0" y="320.0" width="8.4" height="19" fill="#303030"/>
-<text x="58.0" y="334.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve">→</text>
-<rect x="66.4" y="320.0" width="33.6" height="19" fill="#303030"/>
-<text x="66.4" y="334.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">◎ G2</text>
-<rect x="100.0" y="320.0" width="8.4" height="19" fill="#303030"/>
-<rect x="108.4" y="320.0" width="184.8" height="19" fill="#303030"/>
-<text x="108.4" y="334.0" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">assemble + integration</text>
-<rect x="293.2" y="320.0" width="8.4" height="19" fill="#303030"/>
-<rect x="301.6" y="320.0" width="226.8" height="19" fill="#303030"/>
-<text x="301.6" y="334.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" fill-opacity="0.55">───────────────────────────</text>
-<rect x="528.4" y="320.0" width="8.4" height="19" fill="#303030"/>
-<rect x="536.8" y="320.0" width="50.4" height="19" fill="#303030"/>
-<text x="536.8" y="334.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">waits </text>
-<rect x="587.2" y="320.0" width="25.2" height="19" fill="#303030"/>
-<text x="587.2" y="334.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">L5r</text>
-<rect x="612.4" y="320.0" width="8.4" height="19" fill="#303030"/>
-<text x="24.4" y="353.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> ├┄</text>
-<text x="49.6" y="353.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
-<text x="58.0" y="353.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> L4r·a2</text>
-<text x="125.2" y="353.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">L4 ui lane</text>
-<text x="578.8" y="353.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve" fill-opacity="0.55">in ◆</text>
-<text x="24.4" y="372.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> ├┄</text>
-<text x="49.6" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">◎</text>
-<text x="58.0" y="372.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> L5r</text>
-<text x="100.0" y="372.0" textLength="218.4" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">hardened defaults verified</text>
-<text x="570.4" y="372.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">holds</text>
-<text x="24.4" y="391.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> ╰┄</text>
-<text x="49.6" y="391.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
-<text x="58.0" y="391.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> L6r</text>
-<text x="100.0" y="391.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">L6 offline lane</text>
-<text x="578.8" y="391.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve" fill-opacity="0.55">in ◇</text>
-<text x="16.0" y="410.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">╭─</text>
-<text x="32.8" y="410.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve" font-weight="bold"> G2 </text>
-<text x="66.4" y="410.0" textLength="436.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">────────────────────────────────────────────────────</text>
-<text x="503.2" y="410.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" font-weight="bold"> ○ WAITING </text>
-<text x="595.6" y="410.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">─╮</text>
-<text x="16.0" y="429.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
-<text x="32.8" y="429.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">gate: assemble + integration</text>
-<text x="604.0" y="429.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
-<text x="16.0" y="448.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
-<text x="32.8" y="448.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">joins ✓ L4r · ◎ L5r · ✓ L6r</text>
-<text x="604.0" y="448.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
-<text x="16.0" y="467.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">╰─</text>
-<text x="32.8" y="467.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55"> orchestrator </text>
-<text x="150.4" y="467.0" textLength="462.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">──────────────────────────────────────────────────────╯</text>
-<text x="24.4" y="486.0" textLength="495.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">j/k · ←/→ · d details · tab · enter · m message · f · ? · q</text>
+<path d="M37.00,282.00 V301.00" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M87.40,282.00 V288.31 Q87.40,291.50 90.59,291.50 H91.60" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M92.61,291.50 h1.46 M95.07,291.50 h1.46 M97.54,291.50 h1.46" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="100.0" y="296.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve">○ L5r·a2</text>
+<text x="175.6" y="296.0" textLength="252.0" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">re-review — final for the lane</text>
+<text x="486.4" y="296.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">opus5·max</text>
+<text x="578.8" y="296.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">if ✗</text>
+<path d="M37.00,301.00 V320.00" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M104.20,301.00 V307.31 Q104.20,310.50 107.39,310.50 H108.40" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M109.41,310.50 h1.46 M111.87,310.50 h1.46 M114.34,310.50 h1.46" stroke="#949494" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="116.8" y="315.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve">○ L5d·a3</text>
+<text x="192.4" y="315.0" textLength="201.6" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">dual-family continuation</text>
+<text x="478.0" y="315.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">fable∥gpt</text>
+<text x="570.4" y="315.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#ff875f" xml:space="preserve">if ✗✗</text>
+<path d="M37.00,320.00 V339.00 M37.00,329.50 H41.20" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M41.20,329.50 H49.60" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="49.6" y="334.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L6r</text>
+<text x="100.0" y="334.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">L6 offline lane</text>
+<text x="234.4" y="334.0" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">⇠ p1-pass · offli…</text>
+<text x="469.6" y="334.0" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">opus5·max</text>
+<text x="562.0" y="334.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">pass </text>
+<text x="604.0" y="334.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve">◇</text>
+<path d="M37.00,339.00 V345.31 Q37.00,348.50 40.19,348.50 H41.20" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M41.20,348.50 H49.60" stroke="#585858" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="49.6" y="353.0" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">● L7s</text>
+<text x="100.0" y="353.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">security suite</text>
+<text x="461.2" y="353.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">sol5.6·max</text>
+<text x="562.0" y="353.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">pass ◆</text>
+<text x="16.0" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve" font-weight="bold">▍</text>
+<text x="32.8" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
+<text x="41.2" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">◎</text>
+<text x="49.6" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#87d787" xml:space="preserve">●</text>
+<text x="58.0" y="372.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve">→</text>
+<text x="66.4" y="372.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">◎ G2</text>
+<text x="108.4" y="372.0" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">assemble + integration</text>
+<path d="M301.60,367.50 H528.40" stroke="#af87ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round" stroke-opacity="0.55"/>
+<text x="536.8" y="372.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">waits </text>
+<text x="587.2" y="372.0" textLength="25.2" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold">L5r</text>
+<path d="M20.20,396.00 V389.69 Q20.20,386.50 23.39,386.50 H24.40" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M24.40,386.50 H32.80" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="32.8" y="391.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve" font-weight="bold"> L5r·a1 </text>
+<path d="M100.00,386.50 H503.20" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="503.2" y="391.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve" font-weight="bold"> ◎ WORKING </text>
+<path d="M595.60,386.50 H604.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M604.00,386.50 H605.01 Q608.20,386.50 608.20,389.69 V396.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M20.20,396.00 V415.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="32.8" y="410.0" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">review: hardened defaults verified</text>
+<path d="M608.20,396.00 V415.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M20.20,415.00 V434.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="32.8" y="429.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#5fd7ff" xml:space="preserve">progress 2/5 · defaults audit</text>
+<path d="M608.20,415.00 V434.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M20.20,434.00 V440.31 Q20.20,443.50 23.39,443.50 H24.40" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M24.40,443.50 H32.80" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="32.8" y="448.0" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55"> l5-rev </text>
+<path d="M100.00,443.50 H284.80" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="284.8" y="448.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55"> 38m… </text>
+<path d="M335.20,443.50 H394.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="394.0" y="448.0" textLength="109.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" font-weight="bold"> [opus5·max] </text>
+<path d="M503.20,443.50 H604.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<path d="M604.00,443.50 H605.01 Q608.20,443.50 608.20,440.31 V434.00" stroke="#5fd7ff" fill="none" stroke-width="1.1" stroke-linecap="square" stroke-linejoin="round"/>
+<text x="24.4" y="467.0" textLength="495.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">j/k · ←/→ · d details · tab · enter · m message · f · ? · q</text>
 </svg>
