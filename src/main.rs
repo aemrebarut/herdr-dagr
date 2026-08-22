@@ -24,9 +24,10 @@ dagr — a live DAG of your agent swarm (herdr plugin)
 USAGE:
   dagr check <run.json> [--json] [--strict]
       lint a run-state document against the contract
-  dagr view [run.json] [--snapshot] [--width N] [--select ID]
+  dagr view [run.json] [--snapshot [--compact]] [--width N] [--select ID]
       draw the run: interactive pane (j/k · tab · enter · m message · ? · q),
-      watches the file for changes; --snapshot prints one frame to stdout.
+      watches the file for changes; --snapshot prints one frame to stdout;
+      --compact gives that snapshot the normal four-row browse inspector.
       Without a path: $DAGR_RUN, then .dagr/run.json / run.json under the
       herdr context cwd (waits for the file if none exists yet)
       Set DAGR_WORKING_GLYPH=* for the ASCII working-state fallback.
@@ -102,12 +103,14 @@ fn cmd_pane_cwd() -> ExitCode {
 fn cmd_view(args: &[String]) -> ExitCode {
     let mut path: Option<String> = None;
     let mut snapshot = false;
+    let mut compact_snapshot = false;
     let mut width: Option<usize> = None;
     let mut select: Option<String> = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--snapshot" => snapshot = true,
+            "--compact" => compact_snapshot = true,
             "--width" => match it.next().and_then(|v| v.parse().ok()) {
                 Some(v) => width = Some(v),
                 None => {
@@ -130,8 +133,18 @@ fn cmd_view(args: &[String]) -> ExitCode {
         );
         return ExitCode::from(2);
     }
+    if compact_snapshot && !snapshot {
+        eprintln!("dagr view: --compact requires --snapshot");
+        return ExitCode::from(2);
+    }
     let path = path.unwrap_or_else(discover_run_file);
-    view::run(view::ViewArgs { path, snapshot, width, select })
+    view::run(view::ViewArgs {
+        path,
+        snapshot,
+        compact_snapshot,
+        width,
+        select,
+    })
 }
 
 /// Where is the run file? Explicit beats implicit: `$DAGR_RUN`, then

@@ -5,7 +5,7 @@ The README images are generated, not drawn: pipe a snapshot in, get a
 terminal-styled SVG out. Handles the subset of SGR dagr emits (38;5;N
 foreground, 48;5;N background, bold, dim, resets).
 
-Usage: dagr view run.json --snapshot --width 150 | snapshot-svg.py out.svg
+Usage: dagr view run.json --snapshot --compact --width 150 | snapshot-svg.py out.svg
 """
 
 import re

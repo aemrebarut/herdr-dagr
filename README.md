@@ -2,7 +2,7 @@
 
 Your agent swarm as a live DAG, in a [herdr](https://herdr.dev) pane.
 
-![the dagr pane at full width: trace and attention queue above a full-width selection card](assets/pane-sidecar.svg)
+![the dagr pane at full width: trace and attention queue above the compact browse inspector](assets/pane-sidecar.svg)
 
 > *Dagr* is the Norse personification of day: he rides across the sky once
 > per cycle and illuminates everything below. Also, it's a DAG. With herdr's r.
@@ -192,11 +192,11 @@ Press `d` for a focus-plus-context view of the selected node's
 direct inputs and outputs; the complete detail body scrolls independently below
 it. Press `d` or `esc` to return to the exact graph position.
 
-![the compact layout at 72 columns: trace with the focus card docked below](assets/pane-cockpit.svg)
+![the compact layout at 72 columns: trace with the compact browse inspector docked below](assets/pane-cockpit.svg)
 
 Both screenshots are real renderer output, regenerable with
 [`scripts/snapshot-svg.py`](scripts/snapshot-svg.py):
-`dagr view samples/run.json --snapshot --width 150 --select G2 | python3 scripts/snapshot-svg.py out.svg`.
+`dagr view samples/run.json --snapshot --compact --width 150 --select G2 | python3 scripts/snapshot-svg.py out.svg`.
 
 ## Navigation
 

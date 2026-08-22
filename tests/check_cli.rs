@@ -754,6 +754,38 @@ fn snapshot_survives_tiny_and_huge_widths() {
     }
 }
 
+#[test]
+fn compact_snapshot_matches_the_interactive_browse_inspector() {
+    let (full_code, full) = run_snapshot(STATES, &["--width", "72", "--select", "G1"]);
+    let (compact_code, compact) =
+        run_snapshot(STATES, &["--compact", "--width", "72", "--select", "G1"]);
+    assert_eq!(full_code, 0);
+    assert_eq!(compact_code, 0);
+
+    let full = strip_ansi(&full);
+    let compact = strip_ansi(&compact);
+    assert!(
+        full.contains("┌─ G1 · WAITING"),
+        "legacy full snapshot changed:\n{full}"
+    );
+    assert!(
+        compact.lines().any(|line| {
+            line.starts_with('╭') && line.contains("G1") && line.contains("○ WAITING")
+        }),
+        "compact snapshot did not use the browse inspector:\n{compact}"
+    );
+    assert!(
+        compact
+            .lines()
+            .any(|line| line.starts_with('╰') && line.ends_with('╯')),
+        "compact metadata border missing:\n{compact}"
+    );
+    assert!(
+        !compact.contains("┌─ G1 · WAITING"),
+        "compact capture must not fall back to the full detail card:\n{compact}"
+    );
+}
+
 // ── the state-matrix fixture: the whole state machine as data ──────────
 // samples/states.json carries every task state, every attempt state, and
 // every evidence tier; these tests hold the renderer to it.

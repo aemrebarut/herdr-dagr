@@ -16,6 +16,10 @@ use std::time::{Duration, SystemTime};
 pub struct ViewArgs {
     pub path: String,
     pub snapshot: bool,
+    /// Capture the ordinary browse inspector instead of the complete detail
+    /// card. This is explicit so existing snapshot consumers keep their
+    /// stable, exhaustive output while README figures can match the pane.
+    pub compact_snapshot: bool,
     pub width: Option<usize>,
     pub select: Option<String>,
 }
@@ -121,21 +125,23 @@ fn snapshot(args: &ViewArgs) -> ExitCode {
     let selected = args.select.as_deref();
     let scene =
         model::build(&loaded.doc, selected, None, loaded.chip.as_deref(), &model::ViewOpts::default());
-    let frame = render::compose(
-        &render::FrameInput {
-            doc: &loaded.doc,
-            scene: &scene,
-            selected,
-            banner: loaded.banner,
-            flash: None,
-            stale_min: None, // snapshots are for capture; staleness is a live concern
-            watching: false,
-            herdr: None, // hints are a live concern too
-            prompt: None,
-            messages: &loaded.message_summaries,
-        },
-        w,
-    );
+    let input = render::FrameInput {
+        doc: &loaded.doc,
+        scene: &scene,
+        selected,
+        banner: loaded.banner,
+        flash: None,
+        stale_min: None, // snapshots are for capture; staleness is a live concern
+        watching: false,
+        herdr: None, // hints are a live concern too
+        prompt: None,
+        messages: &loaded.message_summaries,
+    };
+    let frame = if args.compact_snapshot {
+        render::compose_with_inspector(&input, w, render::InspectorMode::Compact)
+    } else {
+        render::compose(&input, w)
+    };
     let mut out = std::io::stdout().lock();
     for line in frame.lines {
         let _ = writeln!(out, "{line}");

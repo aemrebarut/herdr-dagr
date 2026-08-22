@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="637" height="583" viewBox="0 0 637 583" font-family="'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace" font-size="14">
+<svg xmlns="http://www.w3.org/2000/svg" width="637" height="507" viewBox="0 0 637 507" font-family="'SF Mono','Cascadia Code','JetBrains Mono',Menlo,Consolas,monospace" font-size="14">
 <rect width="100%" height="100%" rx="8" fill="#101318"/>
 <text x="24.4" y="30.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve" font-weight="bold">assemble: six-lane build → G2</text>
 <text x="293.2" y="30.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">run-assemble-v01 · started 14:02 · no…</text>
@@ -123,20 +123,19 @@
 <text x="58.0" y="391.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve"> L6r</text>
 <text x="100.0" y="391.0" textLength="126.0" lengthAdjust="spacingAndGlyphs" fill="#949494" xml:space="preserve" fill-opacity="0.55">L6 offline lane</text>
 <text x="578.8" y="391.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#87afd7" xml:space="preserve" fill-opacity="0.55">in ◇</text>
-<text x="16.0" y="429.0" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" font-weight="bold">┌─ G2 · WAITING ──────────────────────────────────────────────────────┐</text>
-<text x="16.0" y="448.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│ </text>
-<text x="32.8" y="448.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">gate: assemble + integration</text>
-<text x="595.6" y="448.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve"> │</text>
-<text x="16.0" y="467.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│ </text>
-<text x="32.8" y="467.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">orchestrator</text>
-<text x="595.6" y="467.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve"> │</text>
-<text x="16.0" y="486.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│ </text>
-<text x="32.8" y="486.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">deps L4r✓ L5r◎ L6r✓</text>
-<text x="595.6" y="486.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve"> │</text>
-<text x="16.0" y="505.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│ </text>
-<text x="32.8" y="505.0" textLength="369.6" lengthAdjust="spacingAndGlyphs" fill="#af87ff" xml:space="preserve">[m] message orchestrator  [enter] focus pane</text>
-<text x="595.6" y="505.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve"> │</text>
-<text x="16.0" y="524.0" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">└─────────────────────────────────────────────────────────────────────┘</text>
-<text x="16.0" y="543.0" textLength="596.4" lengthAdjust="spacingAndGlyphs" fill="#444444" xml:space="preserve" fill-opacity="0.55"> ──────────────────────────────────────────────────────────────────────</text>
-<text x="24.4" y="562.0" textLength="394.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">j/k · ←/→ · tab · enter · m message · f · ? · q</text>
+<text x="16.0" y="410.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">╭─</text>
+<text x="32.8" y="410.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve" font-weight="bold"> G2 </text>
+<text x="66.4" y="410.0" textLength="436.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">────────────────────────────────────────────────────</text>
+<text x="503.2" y="410.0" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" font-weight="bold"> ○ WAITING </text>
+<text x="595.6" y="410.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">─╮</text>
+<text x="16.0" y="429.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
+<text x="32.8" y="429.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#d0d0d0" xml:space="preserve">gate: assemble + integration</text>
+<text x="604.0" y="429.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
+<text x="16.0" y="448.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
+<text x="32.8" y="448.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">joins ✓ L4r · ◎ L5r · ✓ L6r</text>
+<text x="604.0" y="448.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">│</text>
+<text x="16.0" y="467.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">╰─</text>
+<text x="32.8" y="467.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55"> orchestrator </text>
+<text x="150.4" y="467.0" textLength="462.0" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve">──────────────────────────────────────────────────────╯</text>
+<text x="24.4" y="486.0" textLength="495.6" lengthAdjust="spacingAndGlyphs" fill="#8a8a8a" xml:space="preserve" fill-opacity="0.55">j/k · ←/→ · d details · tab · enter · m message · f · ? · q</text>
 </svg>
